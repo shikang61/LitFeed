@@ -1,0 +1,32 @@
+name: Daily arXiv Paper Alerts
+
+on:
+  schedule:
+    # 08:00 UTC every day
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  fetch-and-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run paper alerter
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python main.py
