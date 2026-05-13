@@ -1,27 +1,40 @@
-"""Daily arXiv → Telegram alerter.
+"""Daily arXiv → Telegram alerter with Telegram-driven config.
 
-Fetches papers submitted in the last 24h from configured arXiv categories,
-filters by keyword (title/abstract, case-insensitive), and posts each match
-to a Telegram chat as a Markdown-formatted message.
+Each run:
+  1. Polls Telegram for new /commands and mutates config.json accordingly.
+  2. Fetches arXiv papers from configured categories submitted in the last
+     LOOKBACK_HOURS, filters by keyword, and alerts on matches.
+
+Commands (owner only):
+  /list                  → show current keywords + categories
+  /add_kw <text>         → add keyword (free-text, may contain spaces)
+  /rm_kw <text>          → remove keyword (case-insensitive)
+  /add_cat <arxiv.cat>   → add arXiv category
+  /rm_cat <arxiv.cat>    → remove arXiv category
+  /reset                 → restore defaults
+  /help                  → command list
 """
 
+import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import arxiv
 import requests
 
-CATEGORIES = [
+CONFIG_PATH = Path(__file__).parent / "config.json"
+
+DEFAULT_CATEGORIES = [
     "physics.plasm-ph",
     "physics.comp-ph",
     "q-fin.CP",
     "q-fin.PR",
 ]
 
-KEYWORDS = [
-    # Physics / computing
+DEFAULT_KEYWORDS = [
     "AMReX",
     "Grad-Shafranov",
     "EFIT++",
@@ -29,7 +42,6 @@ KEYWORDS = [
     "nuclear fusion",
     "plasma simulation",
     "high-performance computing",
-    # Finance
     "stochastic calculus",
     "volatility modeling",
     "GARCH",
@@ -39,13 +51,169 @@ KEYWORDS = [
     "arbitrage",
 ]
 
-LOOKBACK_HOURS = 24
+LOOKBACK_HOURS = 12
 SNIPPET_CHARS = 300
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
+
+# ---------- config ----------
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        return {
+            "categories": list(DEFAULT_CATEGORIES),
+            "keywords": list(DEFAULT_KEYWORDS),
+            "last_update_id": 0,
+        }
+    with CONFIG_PATH.open() as f:
+        cfg = json.load(f)
+    cfg.setdefault("categories", list(DEFAULT_CATEGORIES))
+    cfg.setdefault("keywords", list(DEFAULT_KEYWORDS))
+    cfg.setdefault("last_update_id", 0)
+    return cfg
+
+
+def save_config(cfg):
+    with CONFIG_PATH.open("w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+
+
+# ---------- telegram ----------
+
+def telegram_call(token, method, **params):
+    url = TELEGRAM_BASE.format(token=token, method=method)
+    try:
+        resp = requests.post(url, data=params, timeout=20)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        print(f"[telegram] {method} failed: {e}", file=sys.stderr)
+        return None
+
+
+def send_message(token, chat_id, text, markdown=True):
+    params = {"chat_id": chat_id, "text": text}
+    if markdown:
+        params["parse_mode"] = "Markdown"
+        params["disable_web_page_preview"] = False
+    return telegram_call(token, "sendMessage", **params) is not None
+
+
+def fetch_updates(token, offset):
+    """Return list of new updates with id > offset."""
+    result = telegram_call(token, "getUpdates", offset=offset + 1, timeout=0)
+    if result is None or not result.get("ok"):
+        return []
+    return result.get("result", [])
+
+
+# ---------- commands ----------
+
+def handle_command(text, cfg):
+    """Mutate cfg in place. Return (changed: bool, reply: str)."""
+    parts = text.strip().split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd in ("/list", "/list@",):
+        return False, _format_list(cfg)
+
+    if cmd == "/help":
+        return False, (
+            "*Commands*\n"
+            "/list — show config\n"
+            "/add\\_kw <text> — add keyword\n"
+            "/rm\\_kw <text> — remove keyword\n"
+            "/add\\_cat <arxiv.cat> — add category\n"
+            "/rm\\_cat <arxiv.cat> — remove category\n"
+            "/reset — restore defaults\n"
+            "/help — this message"
+        )
+
+    if cmd == "/add_kw":
+        if not arg:
+            return False, "Usage: `/add_kw <keyword>`"
+        if any(k.lower() == arg.lower() for k in cfg["keywords"]):
+            return False, f"Keyword already present: `{arg}`"
+        cfg["keywords"].append(arg)
+        return True, f"Added keyword: `{arg}`"
+
+    if cmd == "/rm_kw":
+        if not arg:
+            return False, "Usage: `/rm_kw <keyword>`"
+        before = len(cfg["keywords"])
+        cfg["keywords"] = [k for k in cfg["keywords"] if k.lower() != arg.lower()]
+        if len(cfg["keywords"]) == before:
+            return False, f"Keyword not found: `{arg}`"
+        return True, f"Removed keyword: `{arg}`"
+
+    if cmd == "/add_cat":
+        if not arg:
+            return False, "Usage: `/add_cat <arxiv.category>`"
+        if arg in cfg["categories"]:
+            return False, f"Category already present: `{arg}`"
+        cfg["categories"].append(arg)
+        return True, f"Added category: `{arg}`"
+
+    if cmd == "/rm_cat":
+        if not arg:
+            return False, "Usage: `/rm_cat <arxiv.category>`"
+        if arg not in cfg["categories"]:
+            return False, f"Category not found: `{arg}`"
+        cfg["categories"].remove(arg)
+        return True, f"Removed category: `{arg}`"
+
+    if cmd == "/reset":
+        cfg["categories"] = list(DEFAULT_CATEGORIES)
+        cfg["keywords"] = list(DEFAULT_KEYWORDS)
+        return True, "Config reset to defaults."
+
+    return False, None  # not a recognised command — ignore silently
+
+
+def _format_list(cfg):
+    kws = "\n".join(f"• {k}" for k in cfg["keywords"]) or "_(none)_"
+    cats = "\n".join(f"• `{c}`" for c in cfg["categories"]) or "_(none)_"
+    return f"*Categories*\n{cats}\n\n*Keywords*\n{kws}"
+
+
+def process_telegram_commands(token, chat_id, cfg):
+    """Poll Telegram, apply owner commands. Returns True if cfg mutated."""
+    try:
+        owner_id = int(chat_id)
+    except (TypeError, ValueError):
+        print("CHAT_ID is not an integer; skipping command processing.", file=sys.stderr)
+        return False
+
+    updates = fetch_updates(token, cfg["last_update_id"])
+    changed = False
+
+    for upd in updates:
+        cfg["last_update_id"] = max(cfg["last_update_id"], upd.get("update_id", 0))
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg:
+            continue
+        sender = msg.get("from", {}).get("id")
+        if sender != owner_id:
+            continue  # ignore everyone except owner
+        text = msg.get("text", "")
+        if not text.startswith("/"):
+            continue
+        mutated, reply = handle_command(text, cfg)
+        if reply:
+            send_message(token, chat_id, reply)
+        if mutated:
+            changed = True
+
+    return changed
+
+
+# ---------- arxiv ----------
 
 def fetch_recent_papers(categories, hours):
-    """Return arxiv.Result list submitted within the last `hours` across categories."""
+    if not categories:
+        return []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = " OR ".join(f"cat:{c}" for c in categories)
 
@@ -63,25 +231,25 @@ def fetch_recent_papers(categories, hours):
         if submitted.tzinfo is None:
             submitted = submitted.replace(tzinfo=timezone.utc)
         if submitted < cutoff:
-            # Results are sorted descending — stop once past cutoff.
             break
         recent.append(result)
     return recent
 
 
 def matches_keywords(paper, keywords):
+    if not keywords:
+        return False
     haystack = f"{paper.title}\n{paper.summary}".lower()
     return any(kw.lower() in haystack for kw in keywords)
 
 
 def escape_markdown(text):
-    """Escape characters that break Telegram legacy Markdown parsing."""
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, f"\\{ch}")
     return text
 
 
-def format_message(paper):
+def format_paper(paper):
     title = escape_markdown(paper.title.strip().replace("\n", " "))
     authors = escape_markdown(", ".join(a.name for a in paper.authors[:5]))
     if len(paper.authors) > 5:
@@ -100,22 +268,7 @@ def format_message(paper):
     )
 
 
-def send_telegram_message(token, chat_id, text):
-    url = TELEGRAM_API.format(token=token)
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
-    }
-    try:
-        resp = requests.post(url, data=payload, timeout=20)
-        resp.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        print(f"[telegram] send failed: {e}", file=sys.stderr)
-        return False
-
+# ---------- main ----------
 
 def main():
     token = os.environ.get("TELEGRAM_TOKEN")
@@ -124,24 +277,30 @@ def main():
         print("Missing TELEGRAM_TOKEN or CHAT_ID env vars.", file=sys.stderr)
         sys.exit(1)
 
+    cfg = load_config()
+
+    # 1. process pending /commands first — may add/remove keywords for THIS run
+    config_changed = process_telegram_commands(token, chat_id, cfg)
+    # save always so last_update_id advances even when no mutation
+    save_config(cfg)
+
+    # 2. fetch + filter + alert
     try:
-        papers = fetch_recent_papers(CATEGORIES, LOOKBACK_HOURS)
+        papers = fetch_recent_papers(cfg["categories"], LOOKBACK_HOURS)
     except Exception as e:
         print(f"[arxiv] fetch failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    matched = [p for p in papers if matches_keywords(p, KEYWORDS)]
+    matched = [p for p in papers if matches_keywords(p, cfg["keywords"])]
     print(f"Fetched {len(papers)} papers; {len(matched)} matched keywords.")
+    if config_changed:
+        print("Config mutated by Telegram command(s) this run.")
 
-    if not matched:
-        return
-
-    sent = 0
     for paper in matched:
-        if send_telegram_message(token, chat_id, format_message(paper)):
-            sent += 1
-        time.sleep(1)  # avoid Telegram rate limits
-    print(f"Sent {sent}/{len(matched)} messages.")
+        send_message(token, chat_id, format_paper(paper))
+        time.sleep(1)  # be polite to Telegram
+    if matched:
+        print(f"Sent {len(matched)} messages.")
 
 
 if __name__ == "__main__":

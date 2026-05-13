@@ -2,9 +2,16 @@ name: Daily arXiv Paper Alerts
 
 on:
   schedule:
-    # 08:00 UTC every day
+    # 08:00 and 20:00 UTC every day
     - cron: "0 8 * * *"
+    - cron: "0 20 * * *"
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: write  # required to commit config.json changes back to repo
 
 jobs:
   fetch-and-alert:
@@ -30,3 +37,15 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
+
+      - name: Commit config changes
+        run: |
+          if ! git diff --quiet config.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add config.json
+            git commit -m "chore: update config.json from Telegram commands"
+            git push
+          else
+            echo "No config changes."
+          fi

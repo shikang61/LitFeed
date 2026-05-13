@@ -34,12 +34,27 @@ In the repository: **Settings → Secrets and variables → Actions → New repo
 
 The workflow runs daily at **08:00 UTC**. To test immediately, go to **Actions → Daily arXiv Paper Alerts → Run workflow**.
 
-## Customising
+## Customising via Telegram
 
-Edit `main.py`:
-- `CATEGORIES` — arXiv categories to search.
-- `KEYWORDS` — case-insensitive substrings matched against title + abstract.
-- `LOOKBACK_HOURS` — fetch window (default 24h).
+Send commands directly to your bot. They are processed at the start of the next scheduled run (max latency ≈ 12h with the default twice-daily cron), then `config.json` is committed back to the repo by the workflow.
+
+| Command                | Effect                              |
+|------------------------|-------------------------------------|
+| `/list`                | Show current keywords + categories |
+| `/add_kw <text>`       | Add keyword (free-text, may include spaces, case-insensitive matching) |
+| `/rm_kw <text>`        | Remove keyword                      |
+| `/add_cat <arxiv.cat>` | Add arXiv category (e.g. `cs.LG`)   |
+| `/rm_cat <arxiv.cat>`  | Remove arXiv category               |
+| `/reset`               | Restore default keywords + categories |
+| `/help`                | Show command list                   |
+
+Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
+
+## Customising via code
+
+Edit `main.py` defaults or tune knobs:
+- `DEFAULT_CATEGORIES`, `DEFAULT_KEYWORDS` — applied on `/reset` and when `config.json` is missing.
+- `LOOKBACK_HOURS` — fetch window (default 12h, matches twice-daily cron).
 - `SNIPPET_CHARS` — abstract preview length in the Telegram message.
 
 ## Local testing
