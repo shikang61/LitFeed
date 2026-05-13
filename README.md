@@ -2,7 +2,7 @@
 
 Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions.
 
-Checks four arXiv categories (`physics.plasm-ph`, `physics.comp-ph`, `q-fin.CP`, `q-fin.PR`) once per day, filters papers by domain keywords, and sends a Markdown-formatted message per matching paper.
+Checks four arXiv categories (`physics.plasm-ph`, `physics.comp-ph`, `q-fin.CP`, `q-fin.PR`) once per day and sends a Markdown-formatted message per paper.
 
 ## Setup
 
@@ -40,12 +40,10 @@ Send commands directly to your bot. They are processed at the start of the next 
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
-| `/list`                | Show current keywords + categories |
-| `/add_kw <text>`       | Add keyword (free-text, may include spaces, case-insensitive matching) |
-| `/rm_kw <text>`        | Remove keyword                      |
+| `/list`                | Show current categories            |
 | `/add_cat <arxiv.cat>` | Add arXiv category (e.g. `cs.LG`)   |
 | `/rm_cat <arxiv.cat>`  | Remove arXiv category               |
-| `/reset`               | Restore default keywords + categories |
+| `/reset`               | Restore default categories         |
 | `/help`                | Show command list                   |
 
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
@@ -53,7 +51,7 @@ Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ign
 ## Customising via code
 
 Edit `main.py` defaults or tune knobs:
-- `DEFAULT_CATEGORIES`, `DEFAULT_KEYWORDS` — applied on `/reset` and when `config.json` is missing.
+- `DEFAULT_CATEGORIES` — applied on `/reset` and when `config.json` is missing.
 - `LOOKBACK_HOURS` — fetch window (default 12h, matches twice-daily cron).
 - `SNIPPET_CHARS` — abstract preview length in the Telegram message.
 

@@ -3,24 +3,8 @@
     "physics.plasm-ph",
     "physics.comp-ph",
     "q-fin.CP",
-    "q-fin.PR"
-  ],
-  "keywords": [
-    "AMReX",
-    "Grad-Shafranov",
-    "EFIT++",
-    "VMEC",
-    "nuclear fusion",
-    "plasma simulation",
-    "high-performance computing",
-    "stochastic calculus",
-    "volatility modeling",
-    "GARCH",
-    "Heston",
-    "Merton",
-    "derivatives pricing",
-    "arbitrage",
-    "tokamak"
+    "q-fin.PR",
+    "cs.AI"
   ],
   "last_update_id": 299964924,
   "sent_ids": [

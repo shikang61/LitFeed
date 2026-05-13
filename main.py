@@ -3,12 +3,10 @@
 Each run:
   1. Polls Telegram for new /commands and mutates config.json accordingly.
   2. Fetches arXiv papers from configured categories submitted in the last
-     LOOKBACK_HOURS, filters by keyword, and alerts on matches.
+     LOOKBACK_HOURS and alerts on each.
 
 Commands (owner only):
-  /list                  → show current keywords + categories
-  /add_kw <text>         → add keyword (free-text, may contain spaces)
-  /rm_kw <text>          → remove keyword (case-insensitive)
+  /list                  → show current categories
   /add_cat <arxiv.cat>   → add arXiv category
   /rm_cat <arxiv.cat>    → remove arXiv category
   /reset                 → restore defaults
@@ -34,23 +32,6 @@ DEFAULT_CATEGORIES = [
     "q-fin.PR",
 ]
 
-DEFAULT_KEYWORDS = [
-    "AMReX",
-    "Grad-Shafranov",
-    "EFIT++",
-    "VMEC",
-    "nuclear fusion",
-    "plasma simulation",
-    "high-performance computing",
-    "stochastic calculus",
-    "volatility modeling",
-    "GARCH",
-    "Heston",
-    "Merton",
-    "derivatives pricing",
-    "arbitrage",
-]
-
 LOOKBACK_HOURS = 36
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
@@ -63,14 +44,12 @@ def load_config():
     if not CONFIG_PATH.exists():
         return {
             "categories": list(DEFAULT_CATEGORIES),
-            "keywords": list(DEFAULT_KEYWORDS),
             "last_update_id": 0,
             "sent_ids": [],
         }
     with CONFIG_PATH.open() as f:
         cfg = json.load(f)
     cfg.setdefault("categories", list(DEFAULT_CATEGORIES))
-    cfg.setdefault("keywords", list(DEFAULT_KEYWORDS))
     cfg.setdefault("last_update_id", 0)
     cfg.setdefault("sent_ids", [])
     return cfg
@@ -126,30 +105,11 @@ def handle_command(text, cfg):
         return False, (
             "*Commands*\n"
             "/list — show config\n"
-            "/add\\_kw <text> — add keyword\n"
-            "/rm\\_kw <text> — remove keyword\n"
             "/add\\_cat <arxiv.cat> — add category\n"
             "/rm\\_cat <arxiv.cat> — remove category\n"
             "/reset — restore defaults\n"
             "/help — this message"
         )
-
-    if cmd == "/add_kw":
-        if not arg:
-            return False, "Usage: `/add_kw <keyword>`"
-        if any(k.lower() == arg.lower() for k in cfg["keywords"]):
-            return False, f"Keyword already present: `{arg}`"
-        cfg["keywords"].append(arg)
-        return True, f"Added keyword: `{arg}`"
-
-    if cmd == "/rm_kw":
-        if not arg:
-            return False, "Usage: `/rm_kw <keyword>`"
-        before = len(cfg["keywords"])
-        cfg["keywords"] = [k for k in cfg["keywords"] if k.lower() != arg.lower()]
-        if len(cfg["keywords"]) == before:
-            return False, f"Keyword not found: `{arg}`"
-        return True, f"Removed keyword: `{arg}`"
 
     if cmd == "/add_cat":
         if not arg:
@@ -169,16 +129,14 @@ def handle_command(text, cfg):
 
     if cmd == "/reset":
         cfg["categories"] = list(DEFAULT_CATEGORIES)
-        cfg["keywords"] = list(DEFAULT_KEYWORDS)
         return True, "Config reset to defaults."
 
     return False, None  # not a recognised command — ignore silently
 
 
 def _format_list(cfg):
-    kws = "\n".join(f"• {k}" for k in cfg["keywords"]) or "_(none)_"
     cats = "\n".join(f"• `{c}`" for c in cfg["categories"]) or "_(none)_"
-    return f"*Categories*\n{cats}\n\n*Keywords*\n{kws}"
+    return f"*Categories*\n{cats}"
 
 
 def process_telegram_commands(token, chat_id, cfg):
@@ -246,13 +204,6 @@ def paper_key(paper):
     return sid.rsplit("v", 1)[0] if "v" in sid else sid
 
 
-def matches_keywords(paper, keywords):
-    if not keywords:
-        return False
-    haystack = f"{paper.title}\n{paper.summary}".lower()
-    return any(kw.lower() in haystack for kw in keywords)
-
-
 def escape_markdown(text):
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, f"\\{ch}")
@@ -314,13 +265,9 @@ def main():
         print(f"[arxiv] fetch failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    matched = [p for p in papers if matches_keywords(p, cfg["keywords"])]
     sent_ids = set(cfg["sent_ids"])
-    fresh = [p for p in matched if paper_key(p) not in sent_ids]
-    print(
-        f"Fetched {len(papers)} papers; {len(matched)} matched keywords; "
-        f"{len(fresh)} new after dedup."
-    )
+    fresh = [p for p in papers if paper_key(p) not in sent_ids]
+    print(f"Fetched {len(papers)} papers; {len(fresh)} new after dedup.")
 
     if not papers:
         run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
