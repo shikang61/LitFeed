@@ -2,11 +2,13 @@ name: Daily arXiv Paper Alerts
 
 on:
   schedule:
-    # 10:00, 14:00, 16:00 London time (BST = UTC+1). Shift +1h in GMT winter.
+    # Fallback only — GitHub cron unreliable. Primary trigger = repository_dispatch from cron-job.org.
     - cron: "0 9 * * *"
     - cron: "0 13 * * *"
     - cron: "0 15 * * *"
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-paper-alerter]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
