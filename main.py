@@ -15,6 +15,7 @@ Commands (owner only):
   /help                  → command list
 """
 
+import argparse
 import json
 import os
 import sys
@@ -22,7 +23,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import arxiv
 import requests
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -214,6 +214,7 @@ def process_telegram_commands(token, chat_id, cfg):
 def fetch_recent_papers(categories, hours):
     if not categories:
         return []
+    import arxiv  # lazy import; not needed in --commands-only mode
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = " OR ".join(f"cat:{c}" for c in categories)
 
@@ -271,6 +272,14 @@ def format_paper(paper):
 # ---------- main ----------
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--commands-only",
+        action="store_true",
+        help="Only process queued Telegram commands; skip arXiv fetch + alerts.",
+    )
+    args = parser.parse_args()
+
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
     if not token or not chat_id:
@@ -279,10 +288,15 @@ def main():
 
     cfg = load_config()
 
-    # 1. process pending /commands first — may add/remove keywords for THIS run
+    # 1. process pending /commands
     config_changed = process_telegram_commands(token, chat_id, cfg)
     # save always so last_update_id advances even when no mutation
     save_config(cfg)
+    if config_changed:
+        print("Config mutated by Telegram command(s) this run.")
+
+    if args.commands_only:
+        return
 
     # 2. fetch + filter + alert
     try:
@@ -293,8 +307,6 @@ def main():
 
     matched = [p for p in papers if matches_keywords(p, cfg["keywords"])]
     print(f"Fetched {len(papers)} papers; {len(matched)} matched keywords.")
-    if config_changed:
-        print("Config mutated by Telegram command(s) this run.")
 
     for paper in matched:
         send_message(token, chat_id, format_paper(paper))
