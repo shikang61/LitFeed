@@ -53,6 +53,7 @@ DEFAULT_KEYWORDS = [
 
 LOOKBACK_HOURS = 12
 SNIPPET_CHARS = 300
+MAX_SENT_IDS = 500
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -64,12 +65,14 @@ def load_config():
             "categories": list(DEFAULT_CATEGORIES),
             "keywords": list(DEFAULT_KEYWORDS),
             "last_update_id": 0,
+            "sent_ids": [],
         }
     with CONFIG_PATH.open() as f:
         cfg = json.load(f)
     cfg.setdefault("categories", list(DEFAULT_CATEGORIES))
     cfg.setdefault("keywords", list(DEFAULT_KEYWORDS))
     cfg.setdefault("last_update_id", 0)
+    cfg.setdefault("sent_ids", [])
     return cfg
 
 
@@ -237,6 +240,12 @@ def fetch_recent_papers(categories, hours):
     return recent
 
 
+def paper_key(paper):
+    """Stable ID for dedup; strip version suffix so v1/v2 don't both alert."""
+    sid = paper.get_short_id()
+    return sid.rsplit("v", 1)[0] if "v" in sid else sid
+
+
 def matches_keywords(paper, keywords):
     if not keywords:
         return False
@@ -306,13 +315,31 @@ def main():
         sys.exit(1)
 
     matched = [p for p in papers if matches_keywords(p, cfg["keywords"])]
-    print(f"Fetched {len(papers)} papers; {len(matched)} matched keywords.")
+    sent_ids = set(cfg["sent_ids"])
+    fresh = [p for p in matched if paper_key(p) not in sent_ids]
+    print(
+        f"Fetched {len(papers)} papers; {len(matched)} matched keywords; "
+        f"{len(fresh)} new after dedup."
+    )
 
-    for paper in matched:
-        send_message(token, chat_id, format_paper(paper))
+    if not papers:
+        run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        send_message(
+            token,
+            chat_id,
+            f"_No papers fetched from arXiv_\nRun: `{run_time}`",
+        )
+
+    newly_sent = []
+    for paper in fresh:
+        if send_message(token, chat_id, format_paper(paper)):
+            newly_sent.append(paper_key(paper))
         time.sleep(1)  # be polite to Telegram
-    if matched:
-        print(f"Sent {len(matched)} messages.")
+
+    if newly_sent:
+        cfg["sent_ids"] = (cfg["sent_ids"] + newly_sent)[-MAX_SENT_IDS:]
+        save_config(cfg)
+        print(f"Sent {len(newly_sent)} messages.")
 
 
 if __name__ == "__main__":
