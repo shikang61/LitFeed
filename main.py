@@ -51,7 +51,7 @@ DEFAULT_KEYWORDS = [
     "arbitrage",
 ]
 
-LOOKBACK_HOURS = 12
+LOOKBACK_HOURS = 36
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
