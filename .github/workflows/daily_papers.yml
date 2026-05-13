@@ -2,9 +2,10 @@ name: Daily arXiv Paper Alerts
 
 on:
   schedule:
-    # 08:00 and 20:00 UTC every day
-    - cron: "0 8 * * *"
-    - cron: "0 20 * * *"
+    # 10:00, 14:00, 16:00 London time (BST = UTC+1). Shift +1h in GMT winter.
+    - cron: "0 9 * * *"
+    - cron: "0 13 * * *"
+    - cron: "0 15 * * *"
   workflow_dispatch:
 
 env:
