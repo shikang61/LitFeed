@@ -25,8 +25,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from pylatexenc.latex2text import LatexNodes2Text
 
 import recommender
+
+_LATEX2TEXT = LatexNodes2Text(keep_comments=False, math_mode="text")
+
+
+def latex_to_unicode(text):
+    try:
+        return _LATEX2TEXT.latex_to_text(text)
+    except Exception:
+        return text
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 VOTES_PATH = Path(__file__).parent / "votes.json"
@@ -62,11 +72,12 @@ DEFAULT_CATEGORIES = [
     "stat.AP",
 ]
 
-LOOKBACK_HOURS = 48
+LOOKBACK_HOURS = 36
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
 MAX_SENT_CACHE = 500
 MIN_VOTES_PER_SIDE = 10
+PER_CATEGORY_LIMIT = 2
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -342,14 +353,14 @@ def escape_markdown(text):
 
 
 def format_paper(paper):
-    title = escape_markdown(paper.title.strip().replace("\n", " "))
+    title = escape_markdown(latex_to_unicode(paper.title.strip().replace("\n", " ")))
     names = [a.name for a in paper.authors]
     if len(names) <= 3:
         authors = ", ".join(names)
     else:
         authors = f"{names[0]}, {names[1]}, …, {names[-1]}"
-    authors = escape_markdown(authors)
-    abstract = paper.summary.strip().replace("\n", " ")
+    authors = escape_markdown(latex_to_unicode(authors))
+    abstract = latex_to_unicode(paper.summary.strip().replace("\n", " "))
     if len(abstract) > SNIPPET_CHARS:
         abstract = abstract[:SNIPPET_CHARS].rsplit(" ", 1)[0] + "…"
     abstract = escape_markdown(abstract)
@@ -386,6 +397,19 @@ def build_model(votes):
         [v["text"] for v in votes["liked"]],
         [v["text"] for v in votes["disliked"]],
     )
+
+
+def cap_per_category(papers, limit):
+    """Keep first `limit` papers per primary_category, preserve input order."""
+    counts = {}
+    kept = []
+    for p in papers:
+        cat = p.primary_category
+        if counts.get(cat, 0) >= limit:
+            continue
+        counts[cat] = counts.get(cat, 0) + 1
+        kept.append(p)
+    return kept
 
 
 def prune_sent_cache(votes):
@@ -443,6 +467,7 @@ def main():
     if filter_active(votes):
         model = build_model(votes)
         scored = [(p, recommender.score(paper_text(p), model)) for p in fresh]
+        scored.sort(key=lambda ps: ps[1], reverse=True)
         kept = [p for p, s in scored if s > 0]
         print(
             f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
@@ -455,6 +480,10 @@ def main():
             f"filter cold (likes={len(votes['liked'])}, dislikes={len(votes['disliked'])}) — sending all."
         )
         to_send = fresh
+
+    before_cap = len(to_send)
+    to_send = cap_per_category(to_send, PER_CATEGORY_LIMIT)
+    print(f"Capped per-category ({PER_CATEGORY_LIMIT}): {before_cap} → {len(to_send)}.")
 
     if not papers:
         run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
