@@ -17,10 +17,12 @@ Commands (owner only):
 """
 
 import argparse
+import calendar
 import json
 import os
 import sys
 import time
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -76,8 +78,11 @@ DEFAULT_CATEGORIES = [
 ]
 
 LOOKBACK_HOURS = 36
+ARXIV_RSS_URL = "https://rss.arxiv.org/rss/{category}"
 ARXIV_MAX_ATTEMPTS = 4
 ARXIV_BACKOFF_BASE = 30  # seconds; backoff is 30, 60, 120 between attempts
+# arXiv throttles the default python-requests User-Agent; send a descriptive one.
+ARXIV_USER_AGENT = "LitFeed/1.0 (https://github.com/shikang61/LitFeed)"
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
 MAX_SENT_CACHE = 500
@@ -315,43 +320,118 @@ def process_telegram_updates(token, chat_id, cfg, votes):
 
 # ---------- arxiv ----------
 
-def fetch_recent_papers(categories, hours):
-    if not categories:
-        return []
-    import arxiv  # lazy import; not needed in --commands-only mode
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    query = " OR ".join(f"cat:{c}" for c in categories)
+_Author = namedtuple("_Author", ["name"])
 
-    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=3)
-    search = arxiv.Search(
-        query=query,
-        max_results=200,
-        sort_by=arxiv.SortCriterion.SubmittedDate,
-        sort_order=arxiv.SortOrder.Descending,
-    )
 
-    # arxiv's own num_retries fires too fast for HTTP 429; wrap with backoff.
+class _Paper:
+    """Minimal stand-in for arxiv.Result — only the attributes main.py touches.
+
+    Built from an arXiv RSS feed entry (rss.arxiv.org), whose schema differs
+    from the legacy Atom API.
+    """
+
+    def __init__(self, entry):
+        self.entry_id = entry.get("link", "")  # e.g. https://arxiv.org/abs/2401.12345
+        self.title = entry.get("title", "")
+        # RSS summary is prefixed with "arXiv:... Announce Type: ...\nAbstract: <text>"
+        summary = entry.get("summary", "")
+        if "Abstract:" in summary:
+            summary = summary.split("Abstract:", 1)[1]
+        self.summary = summary.strip()
+        # RSS crams every author into a single comma-separated string
+        raw_authors = entry.get("author", "")
+        self.authors = [_Author(n.strip()) for n in raw_authors.split(",") if n.strip()]
+        self.categories = [t.get("term", "") for t in entry.get("tags", [])]
+        self.primary_category = self.categories[0] if self.categories else ""
+        # feedparser exposes the published date as a UTC struct_time
+        self.published = datetime.fromtimestamp(
+            calendar.timegm(entry.published_parsed), tz=timezone.utc
+        )
+        # one of: new, cross, replace, replace-cross
+        self.announce_type = entry.get("arxiv_announce_type", "")
+
+    def get_short_id(self):
+        # entry_id looks like https://arxiv.org/abs/2401.12345
+        return self.entry_id.rsplit("/abs/", 1)[-1]
+
+
+def _arxiv_get(url):
+    """GET an arXiv RSS feed with backoff; honors the Retry-After header on 429."""
     for attempt in range(1, ARXIV_MAX_ATTEMPTS + 1):
         try:
-            recent = []
-            for result in client.results(search):
-                submitted = result.published
-                if submitted.tzinfo is None:
-                    submitted = submitted.replace(tzinfo=timezone.utc)
-                if submitted < cutoff:
-                    break
-                recent.append(result)
-            return recent
-        except Exception as e:
+            resp = requests.get(
+                url,
+                timeout=30,
+                headers={"User-Agent": ARXIV_USER_AGENT},
+            )
+        except requests.RequestException as e:
             if attempt == ARXIV_MAX_ATTEMPTS:
                 raise
             wait = ARXIV_BACKOFF_BASE * (2 ** (attempt - 1))
             print(
-                f"[arxiv] attempt {attempt}/{ARXIV_MAX_ATTEMPTS} failed: {e}; "
+                f"[arxiv] request error attempt {attempt}/{ARXIV_MAX_ATTEMPTS}: {e}; "
                 f"retrying in {wait}s",
                 file=sys.stderr,
             )
             time.sleep(wait)
+            continue
+
+        if resp.status_code == 429:
+            if attempt == ARXIV_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"arXiv still HTTP 429 after {ARXIV_MAX_ATTEMPTS} attempts"
+                )
+            retry_after = resp.headers.get("Retry-After", "")
+            wait = (
+                int(retry_after)
+                if retry_after.isdigit()
+                else ARXIV_BACKOFF_BASE * (2 ** (attempt - 1))
+            )
+            print(
+                f"[arxiv] HTTP 429 attempt {attempt}/{ARXIV_MAX_ATTEMPTS}; "
+                f"retrying in {wait}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        return resp.content
+
+    raise RuntimeError("arXiv fetch failed")  # unreachable
+
+
+def fetch_recent_papers(categories, hours):
+    """Fetch newly announced papers via per-category arXiv RSS feeds.
+
+    The RSS endpoint is a separate, cached host with far looser rate limits
+    than the legacy API. Each feed is one category's latest daily announcement,
+    so `hours` only acts as a defensive lower bound on the published date.
+    """
+    if not categories:
+        return []
+    import feedparser  # lazy import; not needed in --commands-only mode
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    recent = []
+    seen = set()
+    for cat in categories:
+        feed = feedparser.parse(_arxiv_get(ARXIV_RSS_URL.format(category=cat)))
+        for entry in feed.entries:
+            paper = _Paper(entry)
+            # RSS feeds also carry version replacements; keep only new listings
+            # (a cross-listing is new to this category, so it counts).
+            if paper.announce_type not in ("new", "cross"):
+                continue
+            if paper.published < cutoff:
+                continue
+            key = paper.get_short_id()
+            if key in seen:  # cross-listed papers appear in multiple feeds
+                continue
+            seen.add(key)
+            recent.append(paper)
+        time.sleep(1)  # be polite between feed requests
+    return recent
 
 
 def paper_key(paper):
