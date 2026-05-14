@@ -26,13 +26,37 @@ import requests
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 DEFAULT_CATEGORIES = [
-    "physics.plasm-ph",
+    "cs.AI",
+    "cs.DS",
+    "cs.LG",
+    "cs.MA",
+    "cs.NA",
+    "cs.NE",
+    "cs.SC",
+    "econ.EM",
+    "econ.TH",
+    "math.MP",
+    "math.NA",
+    "math.OC",
+    "math-ph",
+    "nlin.SI",
     "physics.comp-ph",
+    "physics.data-an",
+    "physics.flu-dyn",
+    "physics.plasm-ph",
+    "physics.soc-ph",
     "q-fin.CP",
+    "q-fin.MF",
+    "q-fin.PM",
     "q-fin.PR",
+    "q-fin.RM",
+    "q-fin.ST",
+    "q-fin.TR",
+    "stat.ML",
+    "stat.AP"
 ]
 
-LOOKBACK_HOURS = 36
+LOOKBACK_HOURS = 26
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"

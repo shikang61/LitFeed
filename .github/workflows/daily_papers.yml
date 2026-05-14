@@ -3,9 +3,9 @@ name: Daily arXiv Paper Alerts
 on:
   schedule:
     # Fallback only — GitHub cron unreliable. Primary trigger = repository_dispatch from cron-job.org.
-    - cron: "0 9 * * *"
-    - cron: "0 13 * * *"
-    - cron: "0 15 * * *"
+    # 10:00 Europe/London year-round (split for DST since GH cron has no TZ support).
+    - cron: "0 9 * 4-10 *"   # BST window (Apr–Oct)
+    - cron: "0 10 * 1-3,11,12 *"  # GMT window (Nov–Mar)
   workflow_dispatch:
   repository_dispatch:
     types: [run-paper-alerter]
