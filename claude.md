@@ -1,39 +1,82 @@
 # Project Overview
-I want to build an automated system that checks arXiv daily for new papers in my specific areas of interest, filters them by keyword, and sends me an alert on Telegram. The system must run autonomously using GitHub Actions.
+
+LitFeed is an autonomous daily arXiv → Telegram alerter. Each run fetches newly
+announced papers in the configured arXiv categories, ranks them with a
+preference filter learned from the user's 👍/👎 votes, and pushes the survivors
+to Telegram with vote buttons. It runs unattended on GitHub Actions.
 
 ## Tech Stack
-*   **Language:** Python 3.9+
-*   **Libraries:** `arxiv` (for fetching papers), `requests` (for Telegram API), `datetime` (for time filtering)
-*   **Automation:** GitHub Actions
-*   **Delivery:** Telegram Bot API
 
-## Domain Specifications & Filtering
-The script should fetch papers from the last 24 hours in the following arXiv categories:
-1.  `physics.plasm-ph` (Plasma Physics)
-2.  `physics.comp-ph` (Computational Physics)
-3.  `q-fin.CP` (Computational Finance)
-4.  `q-fin.PR` (Pricing of Securities)
+* **Language:** Python 3.11 (pinned in the workflows)
+* **Libraries:** `feedparser` (arXiv RSS), `requests` (arXiv + Telegram HTTP),
+  `scikit-learn` + `numpy` (TF-IDF recommender), `pylatexenc` (LaTeX → Unicode
+  in titles/abstracts)
+* **Automation:** GitHub Actions (two workflows)
+* **Delivery:** Telegram Bot API
 
-It should only send an alert if the paper's title or abstract contains at least one of the following keywords (case-insensitive):
-*   **Physics/Computing:** AMReX, Grad-Shafranov, EFIT++, VMEC, nuclear fusion, plasma simulation, high-performance computing
-*   **Finance:** stochastic calculus, volatility modeling, GARCH, Heston, Merton, derivatives pricing, arbitrage
+## How It Works
 
-## Tasks to Execute
-Please generate the complete codebase by completing the following steps:
+A run (`python main.py`) does two things in order:
 
-1.  **Create `requirements.txt`**: Include `arxiv` and `requests`.
-2.  **Create `main.py`**:
-    *   Implement a function to fetch papers from the specified arXiv categories submitted within the last 24 hours.
-    *   Implement a filtering function that checks titles and abstracts against the specified keywords.
-    *   Implement a `send_telegram_message` function using the standard Telegram Bot API endpoint (`https://api.telegram.org/bot<TOKEN>/sendMessage`).
-    *   Format the Telegram message cleanly using Markdown (bolding the title, providing a snippet of the abstract, and including the arxiv URL).
-    *   Ensure environmental variables (`TELEGRAM_TOKEN` and `CHAT_ID`) are used for secrets. Do not hardcode them.
-3.  **Create `.github/workflows/daily_papers.yml`**:
-    *   Set up a GitHub Actions workflow that triggers on a CRON schedule (e.g., every day at 08:00 UTC) and via `workflow_dispatch` (for manual testing).
-    *   The workflow should check out the code, set up Python, install dependencies, and run `main.py`.
-    *   Map the GitHub repository secrets to the environment variables required by the Python script.
-4.  **Create `README.md`**: Provide brief instructions on how to set up the Telegram bot via @BotFather, retrieve the Chat ID, and add them to GitHub Repository Secrets.
+1. **Process Telegram updates.** Polls `getUpdates` for owner commands and
+   inline-keyboard vote callbacks, mutating `config.json` / `votes.json`.
+2. **Fetch, filter, alert** (skipped under `--commands-only`):
+   * Fetch papers from each category's RSS feed at
+     `https://rss.arxiv.org/rss/<category>`. RSS is a separate cached host with
+     looser rate limits than the legacy `export.arxiv.org` API, which now
+     returns HTTP 429 for GitHub Actions runner IPs.
+   * Keep only `announce_type` `new`/`cross`; dedup cross-listed papers; drop
+     anything older than `LOOKBACK_HOURS` (36) as a defensive floor.
+   * Drop papers already in `config.json`'s `sent_ids`.
+   * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
+     score each paper with the TF-IDF recommender and keep score > 0.
+     Otherwise (cold start) send everything.
+   * Cap to `PER_CATEGORY_LIMIT` (2) papers per primary category.
+   * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
+     `sent_ids` and `votes["sent_cache"]`.
 
-## Code Quality Requirements
-*   Add clear comments and error handling (e.g., if the Telegram API fails or arXiv is down).
-*   Ensure the script cleanly handles edge cases, such as no new papers matching the criteria on a given day (it should just exit quietly without sending a blank message).
+### Recommender (`recommender.py`)
+
+`fit(liked_docs, disliked_docs)` builds a TF-IDF model (1–2 grams, English
+stop words) and liked/disliked centroids. `score(text, model)` returns
+`cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is imported
+lazily so `--commands-only` runs don't need it.
+
+## Telegram Commands (owner only)
+
+`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`, `/stats`,
+`/help`. Non-owner senders are ignored.
+
+## State Files (committed back to the repo by CI)
+
+* `config.json` — `categories`, `last_update_id` (Telegram offset), `sent_ids`
+  (dedup ring buffer, capped at `MAX_SENT_IDS`).
+* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`), and `sent_cache`
+  (key → `{text, message_id}`, capped at `MAX_SENT_CACHE`) so vote callbacks
+  can recover a paper's text.
+
+`DEFAULT_CATEGORIES` in `main.py` is the seed list (CS / math / physics /
+q-fin / stats — reflecting interests in computational physics, plasma/fusion,
+and quantitative finance). The live set is whatever is in `config.json`.
+
+## GitHub Actions
+
+* `daily_papers.yml` — full run. Triggered by `repository_dispatch`
+  (`run-paper-alerter`, fired by cron-job.org), a fallback `schedule` cron, and
+  `workflow_dispatch`. Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
+* `poll_commands.yml` — every 5 minutes, `python main.py --commands-only`, so
+  commands/votes are handled promptly without waiting for the daily run.
+
+Both commit `config.json` / `votes.json` changes back with rebase. They share a
+`telegram-poll` concurrency group so two runs never push stale state. `sync.sh`
+is a local helper to rebase-and-push around those bot commits.
+
+## Conventions
+
+* Secrets (`TELEGRAM_TOKEN`, `CHAT_ID`) come from env vars only — never
+  hardcoded.
+* Telegram and arXiv HTTP failures are caught; arXiv 429s get exponential
+  backoff (`ARXIV_MAX_ATTEMPTS`, `ARXIV_BACKOFF_BASE`) and a descriptive
+  `User-Agent`.
+* No new papers on a given day → exit quietly, no blank message.
+* `arxiv:` short IDs are stored version-stripped so `v1`/`v2` don't both alert.
