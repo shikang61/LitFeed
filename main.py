@@ -25,14 +25,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
-from pylatexenc.latex2text import LatexNodes2Text
 
 import recommender
 
-_LATEX2TEXT = LatexNodes2Text(keep_comments=False, math_mode="text")
+_LATEX2TEXT = None
 
 
 def latex_to_unicode(text):
+    global _LATEX2TEXT
+    if _LATEX2TEXT is None:
+        from pylatexenc.latex2text import LatexNodes2Text  # lazy; not needed in --commands-only mode
+        _LATEX2TEXT = LatexNodes2Text(keep_comments=False, math_mode="text")
     try:
         return _LATEX2TEXT.latex_to_text(text)
     except Exception:
