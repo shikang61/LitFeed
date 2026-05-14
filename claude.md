@@ -1,95 +1,80 @@
 # Project Overview
 
-LitFeed is a daily arXiv → Telegram alerter with a preference filter learned
-from the user's 👍/👎 votes. A GitHub Action does the daily fetch-and-alert; a
-Cloud Run webhook handles Telegram votes and `/commands` in real time. All
-mutable state lives in Firestore.
+LitFeed is an autonomous daily arXiv → Telegram alerter. Each run fetches newly
+announced papers in the configured arXiv categories, ranks them with a
+preference filter learned from the user's 👍/👎 votes, and pushes the survivors
+to Telegram with vote buttons. It runs unattended on GitHub Actions.
 
 ## Tech Stack
 
-* **Language:** Python 3.11
+* **Language:** Python 3.11 (pinned in the workflows)
 * **Libraries:** `feedparser` (arXiv RSS), `requests` (arXiv + Telegram HTTP),
-  `scikit-learn` + `numpy` (TF-IDF recommender), `pylatexenc` (LaTeX → Unicode),
-  `google-cloud-firestore` (state), `flask` + `gunicorn` (webhook server)
-* **Hosting:** GitHub Actions (daily job) + Cloud Run (webhook)
-* **State:** Firestore
+  `scikit-learn` + `numpy` (TF-IDF recommender), `pylatexenc` (LaTeX → Unicode
+  in titles/abstracts)
+* **Automation:** GitHub Actions (two workflows)
 * **Delivery:** Telegram Bot API
 
-## Architecture
+## How It Works
 
-```
-GitHub Action (daily)  ──fetch+filter+alert──>  Telegram
-        │                                          │
-        └────────────> Firestore <─────────────────┘
-                          ▲          button press / command
-                   Cloud Run webhook <─────────────┘
-```
+A run (`python main.py`) does two things in order:
 
-Telegram delivers updates via **webhook** (no polling — webhook and
-`getUpdates` are mutually exclusive). So both votes *and* `/commands` flow
-through Cloud Run; the daily Action only fetches and alerts.
+1. **Process Telegram updates.** Polls `getUpdates` for owner commands and
+   inline-keyboard vote callbacks, mutating `config.json` / `votes.json`.
+2. **Fetch, filter, alert** (skipped under `--commands-only`):
+   * Fetch papers from each category's RSS feed at
+     `https://rss.arxiv.org/rss/<category>`. RSS is a separate cached host with
+     looser rate limits than the legacy `export.arxiv.org` API, which now
+     returns HTTP 429 for GitHub Actions runner IPs.
+   * Keep only `announce_type` `new`/`cross`; dedup cross-listed papers; drop
+     anything older than `LOOKBACK_HOURS` (36) as a defensive floor.
+   * Drop papers already in `config.json`'s `sent_ids`.
+   * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
+     score each paper with the TF-IDF recommender and keep score > 0.
+     Otherwise (cold start) send everything.
+   * Cap to `PER_CATEGORY_LIMIT` (2) papers per primary category.
+   * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
+     `sent_ids` and `votes["sent_cache"]`.
 
-## Components
+### Recommender (`recommender.py`)
 
-* **`main.py`** — daily job (`python main.py`): read config + votes from
-  Firestore, fetch papers, filter, send alerts, write `sent_ids` /
-  `sent_cache` back. Also defines `handle_command` / `handle_callback` /
-  `send_message`, reused by the webhook.
-* **`webhook.py`** — Cloud Run Flask app. `/webhook` POST verifies the
-  `X-Telegram-Bot-Api-Secret-Token` header, checks owner id, dispatches to
-  `handle_callback` / `handle_command`. `/` is a health check.
-* **`store.py`** — Firestore data layer, shared by `main.py` and `webhook.py`.
-* **`recommender.py`** — TF-IDF model. `fit(liked, disliked)` builds 1–2 gram
-  TF-IDF + liked/disliked centroids; `score(text, model)` returns
-  `cos(text, liked) − cos(text, disliked)`. sklearn imported lazily.
-* **`migrate_to_firestore.py`** — one-time `config.json`/`votes.json` → Firestore.
+`fit(liked_docs, disliked_docs)` builds a TF-IDF model (1–2 grams, English
+stop words) and liked/disliked centroids. `score(text, model)` returns
+`cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is imported
+lazily so `--commands-only` runs don't need it.
 
-## How the daily run works
-
-1. `fetch_recent_papers` pulls each category's RSS feed at
-   `https://rss.arxiv.org/rss/<category>` — a separate cached host with looser
-   limits than the legacy `export.arxiv.org` API (which 429s GitHub runner IPs).
-2. Keep `announce_type` `new`/`cross`; dedup cross-listed papers; drop anything
-   older than `LOOKBACK_HOURS` (36) and anything already in `sent_ids`.
-3. **Filter:** with ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes, score each
-   paper with the recommender and keep score > 0; otherwise (cold start) send all.
-4. Cap to `PER_CATEGORY_LIMIT` (2) per primary category.
-5. Send survivors to Telegram with 👍/👎 buttons; record in `sent_ids` +
-   `sent_cache`.
-
-## Firestore schema
-
-* `state/config` (doc) — `{ categories, sent_ids }`
-* `votes/{paper_key}` (docs) — `{ bucket: "liked"|"disliked", text, ts }`.
-  Doc id = paper key, so re-voting overwrites in place.
-* `sent_cache/{paper_key}` (docs) — `{ text, message_id, ts }`. Pruned to
-  `MAX_SENT_CACHE`; a vote on a paper no longer cached is rejected with a toast.
-
-`MAX_SENT_IDS` / `MAX_SENT_CACHE` (both 500) live in `store.py`.
-
-## Telegram commands (owner only)
+## Telegram Commands (owner only)
 
 `/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`, `/stats`,
-`/help`. Non-owner senders ignored. `DEFAULT_CATEGORIES` in `main.py` is the
-seed list (CS / math / physics / q-fin / stats — computational physics,
-plasma/fusion, quantitative finance).
+`/help`. Non-owner senders are ignored.
 
-## Deployment
+## State Files (committed back to the repo by CI)
 
-* **GitHub Action** (`.github/workflows/daily_papers.yml`) — `repository_dispatch`
-  (`run-paper-alerter`, fired by cron-job.org), fallback `schedule` cron,
-  `workflow_dispatch`. Authenticates to GCP via `google-github-actions/auth`
-  with the `GCP_SA_KEY` secret; `TELEGRAM_TOKEN` / `CHAT_ID` are also secrets.
-* **Cloud Run** — built from `Dockerfile` (`gunicorn webhook:app`). Env vars:
-  `TELEGRAM_TOKEN`, `CHAT_ID`, `WEBHOOK_SECRET`. Uses its service-account
-  identity for Firestore. Register with Telegram via `setWebhook` once.
+* `config.json` — `categories`, `last_update_id` (Telegram offset), `sent_ids`
+  (dedup ring buffer, capped at `MAX_SENT_IDS`).
+* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`), and `sent_cache`
+  (key → `{text, message_id}`, capped at `MAX_SENT_CACHE`) so vote callbacks
+  can recover a paper's text.
+
+`DEFAULT_CATEGORIES` in `main.py` is the seed list (CS / math / physics /
+q-fin / stats — reflecting interests in computational physics, plasma/fusion,
+and quantitative finance). The live set is whatever is in `config.json`.
+
+## GitHub Actions
+
+* `daily_papers.yml` — full run. Triggered by `repository_dispatch`
+  (`run-paper-alerter`, fired by cron-job.org), a fallback `schedule` cron, and
+  `workflow_dispatch`. Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
+* `poll_commands.yml` — every 5 minutes, `python main.py --commands-only`, so
+  commands/votes are handled promptly without waiting for the daily run.
+
+Both commit `config.json` / `votes.json` changes back with rebase. They share a
+`telegram-poll` concurrency group so two runs never push stale state. `sync.sh`
+is a local helper to rebase-and-push around those bot commits.
 
 ## Conventions
 
-* Secrets (`TELEGRAM_TOKEN`, `CHAT_ID`, `WEBHOOK_SECRET`, `GCP_SA_KEY`) come
-  from env / GitHub secrets only — never hardcoded.
-* Firestore auth: `firestore.Client()` auto-picks `GOOGLE_APPLICATION_CREDENTIALS`
-  (the Action) or the Cloud Run service account.
+* Secrets (`TELEGRAM_TOKEN`, `CHAT_ID`) come from env vars only — never
+  hardcoded.
 * Telegram and arXiv HTTP failures are caught; arXiv 429s get exponential
   backoff (`ARXIV_MAX_ATTEMPTS`, `ARXIV_BACKOFF_BASE`) and a descriptive
   `User-Agent`.
