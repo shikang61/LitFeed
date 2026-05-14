@@ -44,8 +44,15 @@ lazily so `--commands-only` runs don't need it.
 
 ## Telegram Commands (owner only)
 
-`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`, `/stats`,
-`/help`. Non-owner senders are ignored.
+`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`, `/vote`,
+`/stats`, `/help`. Non-owner senders are ignored.
+
+`/vote` sends a multi-select inline keyboard of recent unvoted papers
+(`build_vote_keyboard`); each tap toggles ⚪/👍/👎 via a `t:<key>` callback that
+redraws the keyboard, and `vs:submit` commits the batch. Per-`/vote`-message
+state lives in `votes["vote_sessions"]` (keyed by message id) so toggles
+survive across poll runs. The legacy per-paper `v:like:`/`v:dislike:` buttons
+still work alongside it.
 
 ## State Files (committed back to the repo by CI)
 
