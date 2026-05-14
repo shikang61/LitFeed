@@ -343,18 +343,21 @@ def escape_markdown(text):
 
 def format_paper(paper):
     title = escape_markdown(paper.title.strip().replace("\n", " "))
-    authors = escape_markdown(", ".join(a.name for a in paper.authors[:5]))
-    if len(paper.authors) > 5:
-        authors += " et al."
+    names = [a.name for a in paper.authors]
+    if len(names) <= 3:
+        authors = ", ".join(names)
+    else:
+        authors = f"{names[0]}, {names[1]}, …, {names[-1]}"
+    authors = escape_markdown(authors)
     abstract = paper.summary.strip().replace("\n", " ")
     if len(abstract) > SNIPPET_CHARS:
         abstract = abstract[:SNIPPET_CHARS].rsplit(" ", 1)[0] + "…"
     abstract = escape_markdown(abstract)
-    categories = ", ".join(paper.categories)
+    categories = " ".join(f"\\[{c}]" for c in paper.categories)
     return (
         f"*{title}*\n"
         f"_{authors}_\n"
-        f"`{categories}`\n\n"
+        f"{categories}\n\n"
         f"{abstract}\n\n"
         f"[arXiv:{paper.get_short_id()}]({paper.entry_id})"
     )
