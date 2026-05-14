@@ -2,7 +2,7 @@
 
 Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions.
 
-Checks four arXiv categories (`physics.plasm-ph`, `physics.comp-ph`, `q-fin.CP`, `q-fin.PR`) once per day and sends a Markdown-formatted message per paper.
+Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see.
 
 ## Setup
 
@@ -44,7 +44,16 @@ Send commands directly to your bot. They are processed at the start of the next 
 | `/add_cat <arxiv.cat>` | Add arXiv category (e.g. `cs.LG`)   |
 | `/rm_cat <arxiv.cat>`  | Remove arXiv category               |
 | `/reset`               | Restore default categories         |
+| `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
+
+## Preference filter
+
+Each paper message includes 👍/👎 buttons. Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
+
+- **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
+- **Vote anytime**: the poll workflow (every 5 min) records votes via Telegram callbacks. You can re-vote on the same paper; the latest vote wins.
+- **Cache**: last 500 sent papers' text is cached in `votes.json` so callback handlers can reconstruct the document for training. Voting on older papers (beyond the cache) is rejected with a toast.
 
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
 
@@ -52,8 +61,10 @@ Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ign
 
 Edit `main.py` defaults or tune knobs:
 - `DEFAULT_CATEGORIES` — applied on `/reset` and when `config.json` is missing.
-- `LOOKBACK_HOURS` — fetch window (default 12h, matches twice-daily cron).
+- `LOOKBACK_HOURS` — fetch window (default 26h, matches once-daily cron with drift margin).
 - `SNIPPET_CHARS` — abstract preview length in the Telegram message.
+- `MIN_VOTES_PER_SIDE` — votes needed per side before the filter activates (default 10).
+- `MAX_SENT_CACHE` — paper-text cache size for vote callbacks (default 500).
 
 ## Local testing
 

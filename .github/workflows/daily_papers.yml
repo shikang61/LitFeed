@@ -45,15 +45,15 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
 
-      - name: Commit config changes
+      - name: Commit state changes
         run: |
-          if ! git diff --quiet config.json; then
+          if ! git diff --quiet config.json votes.json 2>/dev/null; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add config.json
-            git commit -m "chore: update config.json from Telegram commands"
+            git add config.json votes.json 2>/dev/null || true
+            git commit -m "chore: update state from daily run" || exit 0
             git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push
           else
-            echo "No config changes."
+            echo "No state changes."
           fi

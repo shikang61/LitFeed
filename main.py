@@ -1,15 +1,18 @@
-"""Daily arXiv → Telegram alerter with Telegram-driven config.
+"""Daily arXiv → Telegram alerter with Telegram-driven config + TF-IDF preference filter.
 
 Each run:
-  1. Polls Telegram for new /commands and mutates config.json accordingly.
-  2. Fetches arXiv papers from configured categories submitted in the last
-     LOOKBACK_HOURS and alerts on each.
+  1. Polls Telegram for new /commands and inline-keyboard votes, mutating
+     config.json and votes.json accordingly.
+  2. (Daily mode) Fetches arXiv papers from configured categories submitted in
+     the last LOOKBACK_HOURS, applies the preference filter (cold-start sends
+     all), and alerts on each survivor with 👍/👎 buttons.
 
 Commands (owner only):
   /list                  → show current categories
   /add_cat <arxiv.cat>   → add arXiv category
   /rm_cat <arxiv.cat>    → remove arXiv category
   /reset                 → restore defaults
+  /stats                 → show vote counts + filter status
   /help                  → command list
 """
 
@@ -23,7 +26,10 @@ from pathlib import Path
 
 import requests
 
+import recommender
+
 CONFIG_PATH = Path(__file__).parent / "config.json"
+VOTES_PATH = Path(__file__).parent / "votes.json"
 
 DEFAULT_CATEGORIES = [
     "cs.AI",
@@ -53,16 +59,18 @@ DEFAULT_CATEGORIES = [
     "q-fin.ST",
     "q-fin.TR",
     "stat.ML",
-    "stat.AP"
+    "stat.AP",
 ]
 
 LOOKBACK_HOURS = 26
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
+MAX_SENT_CACHE = 500
+MIN_VOTES_PER_SIDE = 10
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
-# ---------- config ----------
+# ---------- config + votes ----------
 
 def load_config():
     if not CONFIG_PATH.exists():
@@ -85,6 +93,23 @@ def save_config(cfg):
         f.write("\n")
 
 
+def load_votes():
+    if not VOTES_PATH.exists():
+        return {"liked": [], "disliked": [], "sent_cache": {}}
+    with VOTES_PATH.open() as f:
+        votes = json.load(f)
+    votes.setdefault("liked", [])
+    votes.setdefault("disliked", [])
+    votes.setdefault("sent_cache", {})
+    return votes
+
+
+def save_votes(votes):
+    with VOTES_PATH.open("w") as f:
+        json.dump(votes, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
 # ---------- telegram ----------
 
 def telegram_call(token, method, **params):
@@ -98,17 +123,28 @@ def telegram_call(token, method, **params):
         return None
 
 
-def send_message(token, chat_id, text, markdown=True):
+def send_message(token, chat_id, text, markdown=True, reply_markup=None):
+    """Returns Telegram message_id on success, None on failure."""
     params = {"chat_id": chat_id, "text": text}
     if markdown:
         params["parse_mode"] = "Markdown"
         params["disable_web_page_preview"] = False
-    return telegram_call(token, "sendMessage", **params) is not None
+    if reply_markup is not None:
+        params["reply_markup"] = json.dumps(reply_markup)
+    result = telegram_call(token, "sendMessage", **params)
+    if result and result.get("ok"):
+        return result["result"]["message_id"]
+    return None
 
 
 def fetch_updates(token, offset):
-    """Return list of new updates with id > offset."""
-    result = telegram_call(token, "getUpdates", offset=offset + 1, timeout=0)
+    """Return list of new updates (messages + callback_query) with id > offset."""
+    result = telegram_call(
+        token, "getUpdates",
+        offset=offset + 1,
+        timeout=0,
+        allowed_updates=json.dumps(["message", "edited_message", "callback_query"]),
+    )
     if result is None or not result.get("ok"):
         return []
     return result.get("result", [])
@@ -116,22 +152,26 @@ def fetch_updates(token, offset):
 
 # ---------- commands ----------
 
-def handle_command(text, cfg):
-    """Mutate cfg in place. Return (changed: bool, reply: str)."""
+def handle_command(text, cfg, votes):
+    """Mutate cfg in place. Return (cfg_changed: bool, reply: str | None)."""
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    if cmd in ("/list", "/list@",):
+    if cmd in ("/list", "/list@"):
         return False, _format_list(cfg)
+
+    if cmd == "/stats":
+        return False, _format_stats(votes)
 
     if cmd == "/help":
         return False, (
             "*Commands*\n"
-            "/list — show config\n"
+            "/list — show categories\n"
             "/add\\_cat <arxiv.cat> — add category\n"
             "/rm\\_cat <arxiv.cat> — remove category\n"
-            "/reset — restore defaults\n"
+            "/reset — restore default categories\n"
+            "/stats — vote counts + filter status\n"
             "/help — this message"
         )
 
@@ -155,7 +195,7 @@ def handle_command(text, cfg):
         cfg["categories"] = list(DEFAULT_CATEGORIES)
         return True, "Config reset to defaults."
 
-    return False, None  # not a recognised command — ignore silently
+    return False, None
 
 
 def _format_list(cfg):
@@ -163,35 +203,98 @@ def _format_list(cfg):
     return f"*Categories*\n{cats}"
 
 
-def process_telegram_commands(token, chat_id, cfg):
-    """Poll Telegram, apply owner commands. Returns True if cfg mutated."""
+def _format_stats(votes):
+    nl, nd = len(votes["liked"]), len(votes["disliked"])
+    active = nl >= MIN_VOTES_PER_SIDE and nd >= MIN_VOTES_PER_SIDE
+    status = "active" if active else f"cold start (need ≥{MIN_VOTES_PER_SIDE} each)"
+    return f"*Votes*\n👍 {nl}\n👎 {nd}\n\n*Filter:* {status}"
+
+
+# ---------- callback (votes) ----------
+
+def handle_callback(token, chat_id, callback, votes):
+    """Mutate votes in place. Returns True if votes mutated."""
+    cb_id = callback["id"]
+    data = callback.get("data", "")
+
+    if not data.startswith("v:"):
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+        return False
+    try:
+        _, action, key = data.split(":", 2)
+    except ValueError:
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+        return False
+    if action not in ("like", "dislike"):
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+        return False
+
+    cache_entry = votes["sent_cache"].get(key)
+    if not cache_entry:
+        telegram_call(
+            token, "answerCallbackQuery",
+            callback_query_id=cb_id,
+            text="Paper not in cache (too old).",
+        )
+        return False
+    text = cache_entry["text"]
+
+    votes["liked"] = [v for v in votes["liked"] if v["key"] != key]
+    votes["disliked"] = [v for v in votes["disliked"] if v["key"] != key]
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    bucket = "liked" if action == "like" else "disliked"
+    votes[bucket].append({"key": key, "text": text, "ts": ts})
+
+    emoji = "👍" if action == "like" else "👎"
+    telegram_call(
+        token, "answerCallbackQuery",
+        callback_query_id=cb_id,
+        text=f"Recorded {emoji}",
+    )
+    return True
+
+
+def process_telegram_updates(token, chat_id, cfg, votes):
+    """Poll Telegram; apply owner commands + vote callbacks.
+    Returns (cfg_changed, votes_changed)."""
     try:
         owner_id = int(chat_id)
     except (TypeError, ValueError):
-        print("CHAT_ID is not an integer; skipping command processing.", file=sys.stderr)
-        return False
+        print("CHAT_ID is not an integer; skipping update processing.", file=sys.stderr)
+        return False, False
 
     updates = fetch_updates(token, cfg["last_update_id"])
-    changed = False
+    cfg_changed = False
+    votes_changed = False
 
     for upd in updates:
         cfg["last_update_id"] = max(cfg["last_update_id"], upd.get("update_id", 0))
+
+        cb = upd.get("callback_query")
+        if cb:
+            sender = cb.get("from", {}).get("id")
+            if sender != owner_id:
+                continue
+            if handle_callback(token, chat_id, cb, votes):
+                votes_changed = True
+            continue
+
         msg = upd.get("message") or upd.get("edited_message")
         if not msg:
             continue
         sender = msg.get("from", {}).get("id")
         if sender != owner_id:
-            continue  # ignore everyone except owner
+            continue
         text = msg.get("text", "")
         if not text.startswith("/"):
             continue
-        mutated, reply = handle_command(text, cfg)
+        mutated, reply = handle_command(text, cfg, votes)
         if reply:
             send_message(token, chat_id, reply)
         if mutated:
-            changed = True
+            cfg_changed = True
 
-    return changed
+    return cfg_changed, votes_changed
 
 
 # ---------- arxiv ----------
@@ -228,6 +331,10 @@ def paper_key(paper):
     return sid.rsplit("v", 1)[0] if "v" in sid else sid
 
 
+def paper_text(paper):
+    return f"{paper.title}\n\n{paper.summary}"
+
+
 def escape_markdown(text):
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, f"\\{ch}")
@@ -253,6 +360,40 @@ def format_paper(paper):
     )
 
 
+def vote_keyboard(key):
+    return {
+        "inline_keyboard": [[
+            {"text": "👍 Like", "callback_data": f"v:like:{key}"},
+            {"text": "👎 Dislike", "callback_data": f"v:dislike:{key}"},
+        ]]
+    }
+
+
+# ---------- recommender wiring ----------
+
+def filter_active(votes):
+    return (
+        len(votes["liked"]) >= MIN_VOTES_PER_SIDE
+        and len(votes["disliked"]) >= MIN_VOTES_PER_SIDE
+    )
+
+
+def build_model(votes):
+    return recommender.fit(
+        [v["text"] for v in votes["liked"]],
+        [v["text"] for v in votes["disliked"]],
+    )
+
+
+def prune_sent_cache(votes):
+    cache = votes["sent_cache"]
+    excess = len(cache) - MAX_SENT_CACHE
+    if excess <= 0:
+        return
+    for key in list(cache.keys())[:excess]:
+        del cache[key]
+
+
 # ---------- main ----------
 
 def main():
@@ -260,7 +401,7 @@ def main():
     parser.add_argument(
         "--commands-only",
         action="store_true",
-        help="Only process queued Telegram commands; skip arXiv fetch + alerts.",
+        help="Only process queued Telegram updates (commands + votes); skip arXiv fetch.",
     )
     args = parser.parse_args()
 
@@ -271,13 +412,17 @@ def main():
         sys.exit(1)
 
     cfg = load_config()
+    votes = load_votes()
 
-    # 1. process pending /commands
-    config_changed = process_telegram_commands(token, chat_id, cfg)
-    # save always so last_update_id advances even when no mutation
-    save_config(cfg)
-    if config_changed:
+    # 1. process pending /commands + callback votes
+    cfg_changed, votes_changed = process_telegram_updates(token, chat_id, cfg, votes)
+    save_config(cfg)  # always — last_update_id advances
+    if votes_changed:
+        save_votes(votes)
+    if cfg_changed:
         print("Config mutated by Telegram command(s) this run.")
+    if votes_changed:
+        print("Votes mutated by callback(s) this run.")
 
     if args.commands_only:
         return
@@ -291,7 +436,22 @@ def main():
 
     sent_ids = set(cfg["sent_ids"])
     fresh = [p for p in papers if paper_key(p) not in sent_ids]
-    print(f"Fetched {len(papers)} papers; {len(fresh)} new after dedup.")
+
+    if filter_active(votes):
+        model = build_model(votes)
+        scored = [(p, recommender.score(paper_text(p), model)) for p in fresh]
+        kept = [p for p, s in scored if s > 0]
+        print(
+            f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
+            f"{len(kept)} passed filter (threshold 0)."
+        )
+        to_send = kept
+    else:
+        print(
+            f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
+            f"filter cold (likes={len(votes['liked'])}, dislikes={len(votes['disliked'])}) — sending all."
+        )
+        to_send = fresh
 
     if not papers:
         run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -302,14 +462,25 @@ def main():
         )
 
     newly_sent = []
-    for paper in fresh:
-        if send_message(token, chat_id, format_paper(paper)):
-            newly_sent.append(paper_key(paper))
+    for paper in to_send:
+        key = paper_key(paper)
+        msg_id = send_message(
+            token, chat_id, format_paper(paper),
+            reply_markup=vote_keyboard(key),
+        )
+        if msg_id is not None:
+            newly_sent.append(key)
+            votes["sent_cache"][key] = {
+                "text": paper_text(paper),
+                "message_id": msg_id,
+            }
         time.sleep(1)  # be polite to Telegram
 
     if newly_sent:
         cfg["sent_ids"] = (cfg["sent_ids"] + newly_sent)[-MAX_SENT_IDS:]
         save_config(cfg)
+        prune_sent_cache(votes)
+        save_votes(votes)
         print(f"Sent {len(newly_sent)} messages.")
 
 
