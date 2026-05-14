@@ -79,20 +79,17 @@ plasma/fusion, quantitative finance).
 * **GitHub Action** (`.github/workflows/daily_papers.yml`) — `repository_dispatch`
   (`run-paper-alerter`, fired by cron-job.org), fallback `schedule` cron,
   `workflow_dispatch`. Authenticates to GCP via `google-github-actions/auth`
-  using Workload Identity Federation (keyless — org policy blocks SA keys):
-  secrets `WIF_PROVIDER` + `WIF_SERVICE_ACCOUNT`, and `permissions: id-token:
-  write`. `TELEGRAM_TOKEN` / `CHAT_ID` are also secrets.
+  with the `GCP_SA_KEY` secret; `TELEGRAM_TOKEN` / `CHAT_ID` are also secrets.
 * **Cloud Run** — built from `Dockerfile` (`gunicorn webhook:app`). Env vars:
   `TELEGRAM_TOKEN`, `CHAT_ID`, `WEBHOOK_SECRET`. Uses its service-account
   identity for Firestore. Register with Telegram via `setWebhook` once.
 
 ## Conventions
 
-* Secrets (`TELEGRAM_TOKEN`, `CHAT_ID`, `WEBHOOK_SECRET`, `WIF_PROVIDER`,
-  `WIF_SERVICE_ACCOUNT`) come from env / GitHub secrets only — never hardcoded.
-* Firestore auth is keyless: `firestore.Client()` auto-picks the credentials
-  that `google-github-actions/auth` exports (the Action, via WIF) or the Cloud
-  Run service account.
+* Secrets (`TELEGRAM_TOKEN`, `CHAT_ID`, `WEBHOOK_SECRET`, `GCP_SA_KEY`) come
+  from env / GitHub secrets only — never hardcoded.
+* Firestore auth: `firestore.Client()` auto-picks `GOOGLE_APPLICATION_CREDENTIALS`
+  (the Action) or the Cloud Run service account.
 * Telegram and arXiv HTTP failures are caught; arXiv 429s get exponential
   backoff (`ARXIV_MAX_ATTEMPTS`, `ARXIV_BACKOFF_BASE`) and a descriptive
   `User-Agent`.
