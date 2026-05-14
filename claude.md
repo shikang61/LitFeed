@@ -44,23 +44,24 @@ lazily so `--commands-only` runs don't need it.
 
 ## Telegram Commands (owner only)
 
-`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`, `/vote`,
-`/stats`, `/help`. Non-owner senders are ignored.
+`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`,
+`/like N [N …]`, `/dislike N [N …]`, `/stats`, `/help`. Non-owner senders are
+ignored.
 
-`/vote` sends a multi-select inline keyboard of recent unvoted papers
-(`build_vote_keyboard`); each tap toggles ⚪/👍/👎 via a `t:<key>` callback that
-redraws the keyboard, and `vs:submit` commits the batch. Per-`/vote`-message
-state lives in `votes["vote_sessions"]` (keyed by message id) so toggles
-survive across poll runs. The legacy per-paper `v:like:`/`v:dislike:` buttons
-still work alongside it.
+Two ways to vote. Per-paper `v:like:`/`v:dislike:` inline buttons on each daily
+message (`handle_callback`). Or batch: the daily run numbers each paper (`[1]`,
+`[2]`, …) and stores the number→key map in `votes["last_batch"]`; `/like` /
+`/dislike` (`handle_vote_command`) resolve numbers against it. One text message
+votes a whole batch in a single poll cycle — no per-tap callback lag.
 
 ## State Files (committed back to the repo by CI)
 
 * `config.json` — `categories`, `last_update_id` (Telegram offset), `sent_ids`
   (dedup ring buffer, capped at `MAX_SENT_IDS`).
-* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`), and `sent_cache`
+* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`); `sent_cache`
   (key → `{text, message_id}`, capped at `MAX_SENT_CACHE`) so vote callbacks
-  can recover a paper's text.
+  can recover a paper's text; `last_batch` (batch number → key) for `/like`
+  and `/dislike`.
 
 `DEFAULT_CATEGORIES` in `main.py` is the seed list (CS / math / physics /
 q-fin / stats — reflecting interests in computational physics, plasma/fusion,

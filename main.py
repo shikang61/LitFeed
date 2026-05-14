@@ -12,7 +12,8 @@ Commands (owner only):
   /add_cat <arxiv.cat>   → add arXiv category
   /rm_cat <arxiv.cat>    → remove arXiv category
   /reset                 → restore defaults
-  /vote                  → multi-select keyboard to batch-vote recent papers
+  /like N [N ...]        → like papers by number from the latest batch
+  /dislike N [N ...]     → dislike papers by number from the latest batch
   /stats                 → show vote counts + filter status
   /help                  → command list
 """
@@ -89,9 +90,6 @@ MAX_SENT_IDS = 500
 MAX_SENT_CACHE = 500
 MIN_VOTES_PER_SIDE = 10
 PER_CATEGORY_LIMIT = 2
-MAX_VOTE_KEYBOARD = 20    # papers shown per /vote message (Telegram keyboard limit)
-VOTE_TITLE_CHARS = 35     # truncation for paper titles on /vote buttons
-MAX_VOTE_SESSIONS = 10    # keep recent /vote sessions; drop the rest
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -126,7 +124,7 @@ def load_votes():
     votes.setdefault("liked", [])
     votes.setdefault("disliked", [])
     votes.setdefault("sent_cache", {})
-    votes.setdefault("vote_sessions", {})  # /vote message_id → {papers, selections}
+    votes.setdefault("last_batch", {})  # batch number (str) → paper key, from last daily run
     return votes
 
 
@@ -197,7 +195,8 @@ def handle_command(text, cfg, votes):
             "/add\\_cat <arxiv.cat> — add category\n"
             "/rm\\_cat <arxiv.cat> — remove category\n"
             "/reset — restore default categories\n"
-            "/vote — batch-vote recent papers via a keyboard\n"
+            "/like N [N …] — like papers by batch number\n"
+            "/dislike N [N …] — dislike papers by batch number\n"
             "/stats — vote counts + filter status\n"
             "/help — this message"
         )
@@ -237,7 +236,7 @@ def _format_stats(votes):
     return f"*Votes*\n👍 {nl}\n👎 {nd}\n\n*Filter:* {status}"
 
 
-# ---------- callback (votes) ----------
+# ---------- votes ----------
 
 def _record_vote(votes, key, text, action):
     """Move a paper into the liked/disliked bucket, replacing any prior vote."""
@@ -251,152 +250,62 @@ def _record_vote(votes, key, text, action):
     })
 
 
-def _paper_title(votes, key):
-    """First line (title) of a cached paper's text, or the key if uncached."""
-    entry = votes["sent_cache"].get(key)
-    if not entry:
-        return key
-    return entry["text"].split("\n\n", 1)[0].replace("\n", " ")
+def handle_vote_command(text, votes):
+    """Handle `/like` or `/dislike` followed by batch numbers from the latest
+    daily run. Returns (votes_changed: bool, reply: str)."""
+    parts = text.strip().split()
+    action = "like" if parts[0].lower().startswith("/like") else "dislike"
+    nums = parts[1:]
+    if not nums:
+        return False, f"Usage: `/{action} <number> [number …]` — numbers from the latest batch."
 
+    last_batch = votes.get("last_batch", {})
+    if not last_batch:
+        return False, "No batch to vote on yet — wait for the next daily run."
 
-def build_vote_keyboard(votes, session):
-    """Inline keyboard for a /vote session: one toggle per paper + Submit."""
-    emoji = {"like": "👍", "dislike": "👎"}
-    rows = []
-    for key in session["papers"]:
-        mark = emoji.get(session["selections"].get(key), "⚪")
-        title = _paper_title(votes, key)
-        if len(title) > VOTE_TITLE_CHARS:
-            title = title[:VOTE_TITLE_CHARS].rstrip() + "…"
-        rows.append([{"text": f"{mark} {title}", "callback_data": f"t:{key}"}])
-    rows.append([{"text": "✅ Submit", "callback_data": "vs:submit"}])
-    return {"inline_keyboard": rows}
+    recorded, missing = [], []
+    for n in nums:
+        key = last_batch.get(n)
+        cache_entry = votes["sent_cache"].get(key) if key else None
+        if not cache_entry:
+            missing.append(n)
+            continue
+        _record_vote(votes, key, cache_entry["text"], action)
+        recorded.append(n)
 
-
-def send_vote_keyboard(token, chat_id, votes):
-    """Send a /vote multi-select message for recent unvoted papers.
-    Mutates votes (adds a session). Returns True if a session was created."""
-    voted = {v["key"] for v in votes["liked"]} | {v["key"] for v in votes["disliked"]}
-    candidates = [k for k in reversed(votes["sent_cache"]) if k not in voted]
-    candidates = candidates[:MAX_VOTE_KEYBOARD]
-    if not candidates:
-        send_message(token, chat_id, "_No unvoted papers in the cache._")
-        return False
-
-    session = {"papers": candidates, "selections": {}}
-    msg_id = send_message(
-        token, chat_id,
-        "*Tap to mark 👍/👎, then Submit:*",
-        reply_markup=build_vote_keyboard(votes, session),
-    )
-    if msg_id is None:
-        return False
-
-    votes["vote_sessions"][str(msg_id)] = session
-    # keep only the most recent sessions; drop older ones
-    excess = len(votes["vote_sessions"]) - MAX_VOTE_SESSIONS
-    for old in list(votes["vote_sessions"])[:max(0, excess)]:
-        del votes["vote_sessions"][old]
-    return True
-
-
-def _answer(token, cb_id, text=None):
-    if text:
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text=text)
-    else:
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+    emoji = "👍" if action == "like" else "👎"
+    lines = []
+    if recorded:
+        lines.append(f"{emoji} recorded for: {', '.join(recorded)}")
+    if missing:
+        lines.append(f"⚠️ not found: {', '.join(missing)}")
+    return bool(recorded), "\n".join(lines) or "Nothing recorded."
 
 
 def handle_callback(token, chat_id, callback, votes):
-    """Mutate votes in place. Returns True if votes mutated.
-
-    Dispatches three callback_data shapes:
-      v:like:<key> / v:dislike:<key>  single per-paper vote button
-      t:<key>                         /vote keyboard toggle
-      vs:submit                       /vote keyboard submit
-    """
+    """Record an owner per-paper 👍/👎 vote button. Returns True if votes mutated."""
     cb_id = callback["id"]
-    data = callback.get("data", "")
-
-    if data.startswith("v:"):
-        return _handle_single_vote(token, cb_id, data, votes)
-    if data.startswith("t:"):
-        return _handle_toggle(token, chat_id, cb_id, data, callback, votes)
-    if data == "vs:submit":
-        return _handle_submit(token, chat_id, cb_id, callback, votes)
-
-    _answer(token, cb_id)
-    return False
-
-
-def _handle_single_vote(token, cb_id, data, votes):
-    try:
-        _, action, key = data.split(":", 2)
-    except ValueError:
-        _answer(token, cb_id)
+    parts = callback.get("data", "").split(":", 2)
+    if len(parts) != 3 or parts[0] != "v" or parts[1] not in ("like", "dislike"):
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
         return False
-    if action not in ("like", "dislike"):
-        _answer(token, cb_id)
-        return False
+    _, action, key = parts
 
     cache_entry = votes["sent_cache"].get(key)
     if not cache_entry:
-        _answer(token, cb_id, "Paper not in cache (too old).")
+        telegram_call(
+            token, "answerCallbackQuery",
+            callback_query_id=cb_id,
+            text="Paper not in cache (too old).",
+        )
         return False
 
     _record_vote(votes, key, cache_entry["text"], action)
-    _answer(token, cb_id, f"Recorded {'👍' if action == 'like' else '👎'}")
-    return True
-
-
-def _handle_toggle(token, chat_id, cb_id, data, callback, votes):
-    key = data.split(":", 1)[1]
-    msg_id = callback.get("message", {}).get("message_id")
-    session = votes["vote_sessions"].get(str(msg_id))
-    if not session or key not in session["papers"]:
-        _answer(token, cb_id, "This vote session has expired — send /vote again.")
-        return False
-
-    cur = session["selections"].get(key)
-    nxt = {None: "like", "like": "dislike", "dislike": None}[cur]
-    if nxt is None:
-        session["selections"].pop(key, None)
-    else:
-        session["selections"][key] = nxt
-
     telegram_call(
-        token, "editMessageReplyMarkup",
-        chat_id=chat_id, message_id=msg_id,
-        reply_markup=json.dumps(build_vote_keyboard(votes, session)),
+        token, "answerCallbackQuery",
+        callback_query_id=cb_id,
+        text=f"Recorded {'👍' if action == 'like' else '👎'}",
     )
-    _answer(token, cb_id)
-    return True
-
-
-def _handle_submit(token, chat_id, cb_id, callback, votes):
-    msg_id = callback.get("message", {}).get("message_id")
-    session = votes["vote_sessions"].pop(str(msg_id), None)
-    if session is None:
-        _answer(token, cb_id, "This vote session has expired — send /vote again.")
-        return False
-
-    n_like = n_dislike = 0
-    for key, action in session["selections"].items():
-        cache_entry = votes["sent_cache"].get(key)
-        if not cache_entry:
-            continue
-        _record_vote(votes, key, cache_entry["text"], action)
-        if action == "like":
-            n_like += 1
-        else:
-            n_dislike += 1
-
-    summary = f"Recorded 👍×{n_like} 👎×{n_dislike}"
-    telegram_call(
-        token, "editMessageText",
-        chat_id=chat_id, message_id=msg_id, text=summary,
-    )
-    _answer(token, cb_id, summary)
     return True
 
 
@@ -434,8 +343,10 @@ def process_telegram_updates(token, chat_id, cfg, votes):
         text = msg.get("text", "")
         if not text.startswith("/"):
             continue
-        if text.strip().split()[0].lower() in ("/vote", "/vote@"):
-            if send_vote_keyboard(token, chat_id, votes):
+        if text.strip().split()[0].lower() in ("/like", "/dislike"):
+            changed, reply = handle_vote_command(text, votes)
+            send_message(token, chat_id, reply)
+            if changed:
                 votes_changed = True
             continue
         mutated, reply = handle_command(text, cfg, votes)
@@ -579,7 +490,7 @@ def escape_markdown(text):
     return text
 
 
-def format_paper(paper):
+def format_paper(paper, index):
     title = escape_markdown(latex_to_unicode(paper.title.strip().replace("\n", " ")))
     names = [a.name for a in paper.authors]
     if len(names) <= 3:
@@ -593,7 +504,7 @@ def format_paper(paper):
     abstract = escape_markdown(abstract)
     categories = " ".join(f"\\[{c}]" for c in paper.categories)
     return (
-        f"*{title}*\n"
+        f"*[{index}] {title}*\n"
         f"_{authors}_\n"
         f"{categories}\n\n"
         f"{abstract}\n\n"
@@ -721,14 +632,16 @@ def main():
         )
 
     newly_sent = []
-    for paper in to_send:
+    last_batch = {}
+    for i, paper in enumerate(to_send, start=1):
         key = paper_key(paper)
         msg_id = send_message(
-            token, chat_id, format_paper(paper),
+            token, chat_id, format_paper(paper, i),
             reply_markup=vote_keyboard(key),
         )
         if msg_id is not None:
             newly_sent.append(key)
+            last_batch[str(i)] = key
             votes["sent_cache"][key] = {
                 "text": paper_text(paper),
                 "message_id": msg_id,
@@ -738,6 +651,7 @@ def main():
     if newly_sent:
         cfg["sent_ids"] = (cfg["sent_ids"] + newly_sent)[-MAX_SENT_IDS:]
         save_config(cfg)
+        votes["last_batch"] = last_batch
         prune_sent_cache(votes)
         save_votes(votes)
         print(f"Sent {len(newly_sent)} messages.")

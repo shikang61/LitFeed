@@ -44,7 +44,8 @@ Send commands directly to your bot. They are processed at the start of the next 
 | `/add_cat <arxiv.cat>` | Add arXiv category (e.g. `cs.LG`)   |
 | `/rm_cat <arxiv.cat>`  | Remove arXiv category               |
 | `/reset`               | Restore default categories         |
-| `/vote`                | Batch-vote recent papers via a keyboard |
+| `/like N [N …]`        | Like papers by number from the latest batch |
+| `/dislike N [N …]`     | Dislike papers by number from the latest batch |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
 
@@ -54,7 +55,7 @@ Each paper message includes 👍/👎 buttons. Votes are stored in `votes.json` 
 
 - **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
 - **Vote anytime**: the poll workflow (every 5 min) records votes via Telegram callbacks. You can re-vote on the same paper; the latest vote wins.
-- **Batch vote**: `/vote` sends one message with a toggle button per recent unvoted paper (tap cycles ⚪→👍→👎) plus a Submit button that records the whole batch at once. Faster than tapping each paper's message — though, like all callbacks, each tap takes up to one poll cycle (~5 min) to register.
+- **Batch vote**: each paper in the daily run is numbered (`[1]`, `[2]`, …). Reply with `/like 1 3 5` and/or `/dislike 2 4` to vote on several at once in one message — the numbers refer to the most recent batch. Faster than tapping each paper's button, and one message = one poll cycle.
 - **Cache**: last 500 sent papers' text is cached in `votes.json` so callback handlers can reconstruct the document for training. Voting on older papers (beyond the cache) is rejected with a toast.
 
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
