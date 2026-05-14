@@ -41,16 +41,48 @@ GitHub Action (daily)  ──fetch+filter+alert──>  Telegram
 
 1. Create (or pick) a GCP project. Enable the **Firestore API** and create a
    Firestore database in **Native mode**.
-2. Create a service account with the **Cloud Datastore User** role. Download a
-   JSON key — its contents go in the `GCP_SA_KEY` GitHub secret.
+2. Create a service account (`litfeed-sa`) with the **Cloud Datastore User**
+   role. No key is downloaded — the GitHub Action authenticates via Workload
+   Identity Federation (keyless), and Cloud Run uses the SA directly.
+3. Set up Workload Identity Federation so the GitHub Action can impersonate the
+   service account:
+
+   ```bash
+   PROJECT_ID=your-project-id
+   PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+   REPO=shikang61/LitFeed
+   SA=litfeed-sa@$PROJECT_ID.iam.gserviceaccount.com
+
+   gcloud services enable iamcredentials.googleapis.com --project=$PROJECT_ID
+
+   gcloud iam workload-identity-pools create github-pool \
+     --project=$PROJECT_ID --location=global --display-name="GitHub Actions"
+
+   gcloud iam workload-identity-pools providers create-oidc github-provider \
+     --project=$PROJECT_ID --location=global \
+     --workload-identity-pool=github-pool \
+     --issuer-uri="https://token.actions.githubusercontent.com" \
+     --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+     --attribute-condition="assertion.repository=='${REPO}'"
+
+   gcloud iam service-accounts add-iam-policy-binding $SA \
+     --project=$PROJECT_ID \
+     --role="roles/iam.workloadIdentityUser" \
+     --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${REPO}"
+   ```
+
+   The `WIF_PROVIDER` secret value (for step 7) is:
+   `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
 
 ### 4. Migrate existing state into Firestore
 
-One-time, from a local checkout:
+One-time, from a local checkout. Auth with your own user credentials
+(`gcloud auth application-default login`) — no service-account key needed:
 
 ```bash
 pip install -r requirements.txt
-GOOGLE_APPLICATION_CREDENTIALS=key.json python migrate_to_firestore.py
+gcloud auth application-default login
+python migrate_to_firestore.py
 ```
 
 This copies `config.json` + `votes.json` into Firestore. Once verified, those
@@ -63,11 +95,13 @@ gcloud run deploy litfeed-webhook \
   --source . \
   --region <region> \
   --allow-unauthenticated \
+  --service-account litfeed-sa@$PROJECT_ID.iam.gserviceaccount.com \
   --set-env-vars TELEGRAM_TOKEN=<token>,CHAT_ID=<chat_id>,WEBHOOK_SECRET=<random-string>
 ```
 
-Cloud Run builds the `Dockerfile` and uses the service account's identity for
-Firestore. Note the service URL it prints.
+Cloud Run builds the `Dockerfile`. `--service-account` makes it run as
+`litfeed-sa`, which has the Firestore role — otherwise it falls back to the
+default compute SA, which doesn't. Note the service URL it prints.
 
 ### 6. Register the Telegram webhook
 
@@ -84,11 +118,12 @@ polling are mutually exclusive — setting this disables polling.)
 
 **Settings → Secrets and variables → Actions**:
 
-| Name             | Value                                  |
-|------------------|----------------------------------------|
-| `TELEGRAM_TOKEN` | Token from BotFather                   |
-| `CHAT_ID`        | Chat ID from `getUpdates`              |
-| `GCP_SA_KEY`     | Full JSON of the service-account key   |
+| Name                  | Value                                                    |
+|-----------------------|----------------------------------------------------------|
+| `TELEGRAM_TOKEN`      | Token from BotFather                                     |
+| `CHAT_ID`             | Chat ID from `getUpdates`                                |
+| `WIF_PROVIDER`        | Workload Identity provider resource name (from step 3)   |
+| `WIF_SERVICE_ACCOUNT` | `litfeed-sa@<PROJECT_ID>.iam.gserviceaccount.com`        |
 
 The daily workflow runs on the cron in `daily_papers.yml`; trigger it manually
 via **Actions → Daily arXiv Paper Alerts → Run workflow**.
