@@ -76,6 +76,8 @@ DEFAULT_CATEGORIES = [
 ]
 
 LOOKBACK_HOURS = 36
+ARXIV_MAX_ATTEMPTS = 4
+ARXIV_BACKOFF_BASE = 30  # seconds; backoff is 30, 60, 120 between attempts
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
 MAX_SENT_CACHE = 500
@@ -320,7 +322,7 @@ def fetch_recent_papers(categories, hours):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = " OR ".join(f"cat:{c}" for c in categories)
 
-    client = arxiv.Client(page_size=100, delay_seconds=3, num_retries=3)
+    client = arxiv.Client(page_size=100, delay_seconds=5, num_retries=3)
     search = arxiv.Search(
         query=query,
         max_results=200,
@@ -328,15 +330,28 @@ def fetch_recent_papers(categories, hours):
         sort_order=arxiv.SortOrder.Descending,
     )
 
-    recent = []
-    for result in client.results(search):
-        submitted = result.published
-        if submitted.tzinfo is None:
-            submitted = submitted.replace(tzinfo=timezone.utc)
-        if submitted < cutoff:
-            break
-        recent.append(result)
-    return recent
+    # arxiv's own num_retries fires too fast for HTTP 429; wrap with backoff.
+    for attempt in range(1, ARXIV_MAX_ATTEMPTS + 1):
+        try:
+            recent = []
+            for result in client.results(search):
+                submitted = result.published
+                if submitted.tzinfo is None:
+                    submitted = submitted.replace(tzinfo=timezone.utc)
+                if submitted < cutoff:
+                    break
+                recent.append(result)
+            return recent
+        except Exception as e:
+            if attempt == ARXIV_MAX_ATTEMPTS:
+                raise
+            wait = ARXIV_BACKOFF_BASE * (2 ** (attempt - 1))
+            print(
+                f"[arxiv] attempt {attempt}/{ARXIV_MAX_ATTEMPTS} failed: {e}; "
+                f"retrying in {wait}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
 
 
 def paper_key(paper):
