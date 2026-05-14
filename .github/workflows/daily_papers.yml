@@ -14,11 +14,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: write  # required to commit config.json changes back to repo
-
-concurrency:
-  group: telegram-poll
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   fetch-and-alert:
@@ -39,21 +35,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Run paper alerter
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
-
-      - name: Commit state changes
-        run: |
-          if ! git diff --quiet config.json votes.json 2>/dev/null; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add config.json votes.json 2>/dev/null || true
-            git commit -m "chore: update state from daily run" || exit 0
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
-          else
-            echo "No state changes."
-          fi
