@@ -29,6 +29,7 @@ In the repository: **Settings → Secrets and variables → Actions → New repo
 |-------------------|---------------------------------------------|
 | `TELEGRAM_TOKEN`  | The token from BotFather                    |
 | `CHAT_ID`         | The chat ID from `getUpdates`               |
+| `LITFEED_TO_READ_CHAT_ID` | Optional target group chat ID for the `Read` button |
 | `GROK_API_KEY`    | Optional xAI API key for Grok summaries     |
 
 Optionally set a repository variable named `GROK_MODEL` to override the default Grok model (`grok-4.3`).
@@ -71,8 +72,9 @@ Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that
 
 ## Reading habit loop
 
-LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include a `Delete` button:
+LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include `Read` and `Delete` buttons:
 
+- `Read` forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
 - `Delete` first asks for confirmation, then deletes the Telegram message.
 - `/later N [N …]` saves papers to your queue.
 - `/read N [N …]` marks papers as read.

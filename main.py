@@ -306,6 +306,16 @@ def delete_message(token, chat_id, message_id):
     return telegram_call(token, "deleteMessage", chat_id=chat_id, message_id=message_id)
 
 
+def forward_message(token, target_chat_id, source_chat_id, message_id):
+    return telegram_call(
+        token,
+        "forwardMessage",
+        chat_id=target_chat_id,
+        from_chat_id=source_chat_id,
+        message_id=message_id,
+    )
+
+
 def grok_summarize_paper(paper):
     api_key = os.environ.get("GROK_API_KEY") or os.environ.get("XAI_API_KEY")
     if not api_key:
@@ -748,7 +758,15 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
     valid_habit = (
         len(parts) == 3
         and parts[0] == "h"
-        and parts[1] in ("later", "read", "skip", "delete", "confirm_delete", "cancel_delete")
+        and parts[1] in (
+            "later",
+            "read",
+            "skip",
+            "read_to_group",
+            "delete",
+            "confirm_delete",
+            "cancel_delete",
+        )
     )
     if not valid_vote and not valid_habit:
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
@@ -757,6 +775,36 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
 
     message = callback.get("message") or {}
     message_id = message.get("message_id")
+    source_chat_id = message.get("chat", {}).get("id") or chat_id
+
+    if kind == "h" and action == "read_to_group":
+        target_chat_id = os.environ.get("LITFEED_TO_READ_CHAT_ID")
+        if not target_chat_id:
+            telegram_call(
+                token,
+                "answerCallbackQuery",
+                callback_query_id=cb_id,
+                text="Set LITFEED_TO_READ_CHAT_ID to forward papers.",
+            )
+            return False, False
+        if not message_id:
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
+            return False, False
+        result = forward_message(token, target_chat_id, source_chat_id, message_id)
+        if not result or not result.get("ok"):
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not forward.")
+            return False, False
+
+        text_value = None
+        for entry in votes.get("last_batch", {}).values():
+            if isinstance(entry, dict) and entry.get("key") == key:
+                text_value = entry.get("text")
+                if text_value:
+                    break
+        if text_value:
+            update_reading_status(reading_log, key, text_value, "saved")
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Forwarded to To Read.")
+        return False, bool(text_value)
 
     if kind == "h" and action in ("delete", "confirm_delete", "cancel_delete"):
         if not message_id:
@@ -1032,6 +1080,9 @@ def format_paper(paper, index, grok_summary=None):
 def vote_keyboard(key):
     return {
         "inline_keyboard": [
+            [
+                {"text": "Read", "callback_data": f"h:read_to_group:{key}"},
+            ],
             [
                 {"text": "Delete", "callback_data": f"h:delete:{key}"},
             ],
