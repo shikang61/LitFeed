@@ -69,6 +69,7 @@ Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that
 - **Batch vote**: each paper in the daily run is numbered (`[1]`, `[2]`, …). Reply with `/like 1 3 5` and/or `/dislike 2 4` to vote on several at once in one message — the numbers refer to the most recent batch. Faster than tapping each paper's button, and one message = one poll cycle.
 - **Latest batch**: the most recent batch is stored compactly in `votes.json` so batch commands and callback buttons can reconstruct the document for training.
 - **Serendipity slot**: when the filter is active, one daily slot is reserved for a near-miss paper so the feed can still surface adjacent ideas instead of collapsing too narrowly around old likes.
+- **Priority mix**: each 10-paper batch targets 7 papers from priority categories (`cs.MA`, `math.NA`, `math-ph`, `physics.comp-ph`, `physics.flu-dyn`, `physics.plasm-ph`, `q-fin.CP`, `q-fin.PM`, `q-fin.TR`, `q-fin.RM`) and 3 papers from the remaining configured categories when available.
 
 ## Reading habit loop
 
@@ -99,8 +100,9 @@ Edit `main.py` defaults or tune knobs:
 - `TELEGRAM_SAFE_MESSAGE_CHARS` — safety cap for paper messages; abstracts are otherwise shown in full.
 - `GROK_DEFAULT_MODEL` — default xAI model for paper summaries.
 - `MIN_VOTES_PER_SIDE` — votes needed per side before the filter activates (default 10).
-- `MAX_PAPERS_PER_RUN` — total daily paper cap (default 5).
+- `MAX_PAPERS_PER_RUN` — total daily paper cap (default 10).
 - `SERENDIPITY_SLOTS` — active-filter daily slots reserved for near-miss papers (default 1).
+- `PRIORITY_CATEGORIES` / `PRIORITY_PAPERS_PER_RUN` — target mix for the final daily batch.
 - `TOPIC_KEYWORDS` — lightweight topic labels shown in `/stats` and the weekly digest.
 
 ## Local testing

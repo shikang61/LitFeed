@@ -97,13 +97,27 @@ MAX_SENT_IDS = 500
 MIN_VOTES_PER_SIDE = 10
 # Set to 0 to disable category quota and let best papers win globally.
 PER_CATEGORY_LIMIT = 0
-MAX_PAPERS_PER_RUN = 5
+MAX_PAPERS_PER_RUN = 10
 SERENDIPITY_SLOTS = 1
+PRIORITY_PAPERS_PER_RUN = 7
 RECENCY_HALF_LIFE_DAYS = 45
 EARLY_ACTIVE_EXTRA_VOTES = 5
 EARLY_ACTIVE_RELEVANCE_FLOOR = -0.03
 DIVERSITY_MAX_JACCARD = 0.85
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
+
+PRIORITY_CATEGORIES = {
+    "cs.MA",
+    "math.NA",
+    "math-ph",
+    "physics.comp-ph",
+    "physics.flu-dyn",
+    "physics.plasm-ph",
+    "q-fin.CP",
+    "q-fin.PM",
+    "q-fin.TR",
+    "q-fin.RM",
+}
 
 TOPIC_KEYWORDS = {
     "plasma": ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
@@ -1207,6 +1221,35 @@ def cap_total(papers, limit):
     return papers[:limit]
 
 
+def is_priority_paper(paper):
+    return any(cat in PRIORITY_CATEGORIES for cat in paper.categories)
+
+
+def select_priority_mix(papers, total_limit, priority_slots):
+    """Target the configured priority/non-priority mix while preserving ranking within each pool."""
+    if total_limit <= 0:
+        return []
+
+    priority_slots = min(max(priority_slots, 0), total_limit)
+    other_slots = total_limit - priority_slots
+    priority = [p for p in papers if is_priority_paper(p)]
+    other = [p for p in papers if not is_priority_paper(p)]
+
+    selected = priority[:priority_slots] + other[:other_slots]
+    selected_keys = {paper_key(p) for p in selected}
+
+    if len(selected) < total_limit:
+        for paper in papers:
+            if paper_key(paper) in selected_keys:
+                continue
+            selected.append(paper)
+            selected_keys.add(paper_key(paper))
+            if len(selected) >= total_limit:
+                break
+
+    return selected
+
+
 def select_with_serendipity(scored_papers, floor, total_limit, slots):
     """Reserve a small slot for near-miss papers when the preference filter is active."""
     if slots <= 0 or total_limit <= 1:
@@ -1330,11 +1373,11 @@ def main():
         # Primary objective: personal relevance. Secondary: freshness.
         scored.sort(key=lambda ps: (ps[1], ps[0].published), reverse=True)
         scored = apply_diversity_guardrail(scored, DIVERSITY_MAX_JACCARD)
-        kept = select_with_serendipity(scored, floor, MAX_PAPERS_PER_RUN, SERENDIPITY_SLOTS)
+        kept = select_with_serendipity(scored, floor, max(len(scored), MAX_PAPERS_PER_RUN), SERENDIPITY_SLOTS)
         score_by_key = {paper_key(p): s for p, s in scored}
         print(
             f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
-            f"{len(kept)} selected with {SERENDIPITY_SLOTS} serendipity slot(s) "
+            f"{len(kept)} candidates selected with {SERENDIPITY_SLOTS} serendipity slot(s) "
             f"(threshold {floor:.2f})."
         )
         to_send = kept
@@ -1357,9 +1400,13 @@ def main():
     else:
         print("Per-category cap disabled: best papers win globally.")
 
-    before_total_cap = len(to_send)
-    to_send = cap_total(to_send, MAX_PAPERS_PER_RUN)
-    print(f"Capped total per run ({MAX_PAPERS_PER_RUN}): {before_total_cap} → {len(to_send)}.")
+    before_priority_mix = len(to_send)
+    to_send = select_priority_mix(to_send, MAX_PAPERS_PER_RUN, PRIORITY_PAPERS_PER_RUN)
+    priority_count = sum(1 for paper in to_send if is_priority_paper(paper))
+    print(
+        f"Priority mix ({PRIORITY_PAPERS_PER_RUN}/{MAX_PAPERS_PER_RUN} target): "
+        f"{before_priority_mix} → {len(to_send)} selected; {priority_count} priority."
+    )
 
     if not papers:
         run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
