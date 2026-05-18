@@ -1,13 +1,9 @@
 {
   "categories": [
-    "cs.AI",
     "cs.LG",
     "cs.MA",
-    "cs.NA",
-    "cs.NE",
     "econ.EM",
     "econ.TH",
-    "math.MP",
     "math.NA",
     "math.OC",
     "math-ph",
@@ -24,8 +20,7 @@
     "q-fin.RM",
     "q-fin.ST",
     "q-fin.TR",
-    "stat.ML",
-    "stat.AP"
+    "stat.ML"
   ],
   "last_update_id": 299964953,
   "sent_ids": [
