@@ -14,6 +14,13 @@ Commands (owner only):
   /reset                 → restore defaults
   /like N [N ...]        → like papers by number from the latest batch
   /dislike N [N ...]     → dislike papers by number from the latest batch
+  /later N [N …]         → save papers for later reading
+  /read N [N …]          → mark papers as read
+  /skip N [N …]          → mark papers as skipped + disliked
+  /note N <text>         → attach a note to a paper from the latest batch
+  /queue                 → show saved/unread papers
+  /notes [query]         → search saved notes
+  /digest                → send a weekly-style reading digest now
   /why N                 → explain why paper N matched your profile
   /stats                 → show vote counts + filter status
   /help                  → command list
@@ -50,18 +57,13 @@ def latex_to_unicode(text):
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 VOTES_PATH = Path(__file__).parent / "votes.json"
+READING_LOG_PATH = Path(__file__).parent / "reading_log.json"
 
 DEFAULT_CATEGORIES = [
-    "cs.AI",
-    "cs.DS",
     "cs.LG",
     "cs.MA",
-    "cs.NA",
-    "cs.NE",
-    "cs.SC",
     "econ.EM",
     "econ.TH",
-    "math.MP",
     "math.NA",
     "math.OC",
     "math-ph",
@@ -78,8 +80,7 @@ DEFAULT_CATEGORIES = [
     "q-fin.RM",
     "q-fin.ST",
     "q-fin.TR",
-    "stat.ML",
-    "stat.AP",
+    "stat.ML"
 ]
 
 LOOKBACK_HOURS = 36
@@ -94,11 +95,25 @@ MIN_VOTES_PER_SIDE = 10
 # Set to 0 to disable category quota and let best papers win globally.
 PER_CATEGORY_LIMIT = 0
 MAX_PAPERS_PER_RUN = 5
+SERENDIPITY_SLOTS = 1
 RECENCY_HALF_LIFE_DAYS = 45
 EARLY_ACTIVE_EXTRA_VOTES = 5
 EARLY_ACTIVE_RELEVANCE_FLOOR = -0.03
 DIVERSITY_MAX_JACCARD = 0.85
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
+
+TOPIC_KEYWORDS = {
+    "plasma": ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
+    "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],
+    "PDEs": ["pde", "partial differential", "equation", "finite element", "spectral method"],
+    "numerics": ["numerical", "simulation", "solver", "discretization", "monte carlo", "mesh"],
+    "inverse problems": ["inverse problem", "bayesian", "uncertainty", "regularization", "reconstruction"],
+    "optimization": ["optimization", "optimal control", "gradient", "convex", "variational"],
+    "machine learning": ["machine learning", "neural", "transformer", "diffusion", "reinforcement learning"],
+    "quantum": ["quantum", "qubit", "hamiltonian", "spectral triple", "nisq"],
+    "finance": ["portfolio", "market", "trading", "risk", "volatility", "option"],
+    "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"],
+}
 
 
 # ---------- config + votes ----------
@@ -154,6 +169,77 @@ def save_votes(votes):
         f.write("\n")
 
 
+def load_reading_log():
+    if not READING_LOG_PATH.exists():
+        return {"papers": {}}
+    with READING_LOG_PATH.open() as f:
+        log = json.load(f)
+    log.setdefault("papers", {})
+    return log
+
+
+def save_reading_log(log):
+    with READING_LOG_PATH.open("w") as f:
+        json.dump(log, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _title_from_text(text):
+    return (text or "").split("\n", 1)[0].strip()
+
+
+def _ensure_paper_log_entry(log, key, text=None, title=None, url=None, categories=None, score=None):
+    papers = log.setdefault("papers", {})
+    entry = papers.setdefault(key, {"key": key, "created_ts": _now_iso(), "notes": []})
+    if text and not entry.get("text"):
+        entry["text"] = text
+    if title or text:
+        entry["title"] = title or entry.get("title") or _title_from_text(text)
+    if url:
+        entry["url"] = url
+    if categories:
+        entry["categories"] = list(categories)
+    if score is not None and not math.isnan(score):
+        entry["score"] = round(float(score), 4)
+    entry.setdefault("notes", [])
+    return entry
+
+
+def record_sent_paper(log, paper, score=None):
+    key = paper_key(paper)
+    entry = _ensure_paper_log_entry(
+        log,
+        key,
+        text=paper_text(paper),
+        title=latex_to_unicode(paper.title.strip().replace("\n", " ")),
+        url=paper.entry_id,
+        categories=paper.categories,
+        score=score,
+    )
+    entry["sent_ts"] = _now_iso()
+    entry.setdefault("status", "sent")
+    return entry
+
+
+def update_reading_status(log, key, text, status, score=None):
+    entry = _ensure_paper_log_entry(log, key, text=text, score=score)
+    entry["status"] = status
+    entry["status_ts"] = _now_iso()
+    return entry
+
+
+def add_paper_note(log, key, text, note):
+    entry = _ensure_paper_log_entry(log, key, text=text)
+    entry.setdefault("notes", []).append({"text": note, "ts": _now_iso()})
+    entry["status"] = entry.get("status", "saved")
+    entry["status_ts"] = _now_iso()
+    return entry
+
+
 # ---------- telegram ----------
 
 def telegram_call(token, method, **params):
@@ -196,7 +282,7 @@ def fetch_updates(token, offset):
 
 # ---------- commands ----------
 
-def handle_command(text, cfg, votes):
+def handle_command(text, cfg, votes, reading_log):
     """Mutate cfg in place. Return (cfg_changed: bool, reply: str | None)."""
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].lower()
@@ -206,7 +292,7 @@ def handle_command(text, cfg, votes):
         return False, _format_list(cfg)
 
     if cmd == "/stats":
-        return False, _format_stats(votes)
+        return False, _format_stats(votes, reading_log)
 
     if cmd == "/help":
         return False, (
@@ -217,10 +303,34 @@ def handle_command(text, cfg, votes):
             "/reset — restore default categories\n"
             "/like N [N …] — like papers by batch number\n"
             "/dislike N [N …] — dislike papers by batch number\n"
+            "/later N [N …] — save papers for later reading\n"
+            "/read N [N …] — mark papers as read\n"
+            "/skip N [N …] — skip papers and train them as negative examples\n"
+            "/note N <text> — attach a note to a latest-batch paper\n"
+            "/queue — show saved/unread papers\n"
+            "/notes [query] — search your paper notes\n"
+            "/digest — send a weekly-style reading digest now\n"
             "/why N — explain why a paper matched\n"
             "/stats — vote counts + filter status\n"
             "/help — this message"
         )
+
+    if cmd in ("/later", "/read", "/skip"):
+        changed, reply = handle_reading_status_command(text, votes, reading_log)
+        return changed, reply
+
+    if cmd == "/note":
+        changed, reply = handle_note_command(text, votes, reading_log)
+        return changed, reply
+
+    if cmd == "/queue":
+        return False, format_reading_queue(reading_log)
+
+    if cmd == "/notes":
+        return False, format_notes(reading_log, arg)
+
+    if cmd == "/digest":
+        return False, format_weekly_digest(votes, reading_log)
 
     if cmd == "/why":
         if not arg:
@@ -279,11 +389,154 @@ def _format_list(cfg):
     return f"*Categories*\n{cats}"
 
 
-def _format_stats(votes):
+def _format_stats(votes, reading_log):
     nl, nd = len(votes["liked"]), len(votes["disliked"])
     active = nl >= MIN_VOTES_PER_SIDE and nd >= MIN_VOTES_PER_SIDE
     status = "active" if active else f"cold start (need ≥{MIN_VOTES_PER_SIDE} each)"
-    return f"*Votes*\n👍 {nl}\n👎 {nd}\n\n*Filter:* {status}"
+    reading_counts = reading_status_counts(reading_log)
+    topics = format_topic_summary(reading_log)
+    return (
+        f"*Votes*\n👍 {nl}\n👎 {nd}\n\n"
+        f"*Filter:* {status}\n\n"
+        f"*Reading*\n"
+        f"Saved: {reading_counts.get('saved', 0)}\n"
+        f"Read: {reading_counts.get('read', 0)}\n"
+        f"Skipped: {reading_counts.get('skipped', 0)}\n\n"
+        f"*Topics:* {topics}"
+    )
+
+
+def reading_status_counts(reading_log):
+    counts = {}
+    for entry in reading_log.get("papers", {}).values():
+        status = entry.get("status", "sent")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def infer_topics(text):
+    lowered = (text or "").lower()
+    matched = []
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        if any(keyword in lowered for keyword in keywords):
+            matched.append(topic)
+    return matched
+
+
+def top_topics_for_entries(entries, limit=5):
+    counts = {}
+    for entry in entries:
+        text = f"{entry.get('title', '')}\n{entry.get('text', '')}"
+        for topic in infer_topics(text):
+            counts[topic] = counts.get(topic, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+
+def format_topic_summary(reading_log):
+    meaningful = [
+        entry
+        for entry in reading_log.get("papers", {}).values()
+        if entry.get("status") in ("saved", "read")
+    ]
+    topics = top_topics_for_entries(meaningful)
+    if not topics:
+        return "_not enough reading data yet_"
+    return ", ".join(f"`{escape_markdown(topic)}` ({count})" for topic, count in topics)
+
+
+def _sorted_papers(reading_log):
+    return sorted(
+        reading_log.get("papers", {}).values(),
+        key=lambda entry: entry.get("status_ts") or entry.get("sent_ts") or entry.get("created_ts", ""),
+        reverse=True,
+    )
+
+
+def format_reading_queue(reading_log, limit=10):
+    queue = [
+        entry for entry in _sorted_papers(reading_log)
+        if entry.get("status") in ("saved", "sent")
+    ][:limit]
+    if not queue:
+        return "*Reading queue*\n_empty_"
+    lines = ["*Reading queue*"]
+    for i, entry in enumerate(queue, start=1):
+        title = escape_markdown(entry.get("title") or _title_from_text(entry.get("text", "")) or entry["key"])
+        status = entry.get("status", "sent")
+        lines.append(f"{i}. `{entry['key']}` [{status}] {title}")
+    return "\n".join(lines)
+
+
+def format_notes(reading_log, query="", limit=10):
+    query_lc = query.lower()
+    matches = []
+    for entry in _sorted_papers(reading_log):
+        haystack = f"{entry.get('title', '')}\n{entry.get('text', '')}".lower()
+        for note in entry.get("notes", []):
+            note_text = note.get("text", "")
+            if query_lc and query_lc not in haystack and query_lc not in note_text.lower():
+                continue
+            matches.append((entry, note_text))
+            break
+        if len(matches) >= limit:
+            break
+    if not matches:
+        return "*Notes*\n_no matching notes yet_"
+    lines = ["*Notes*"]
+    for entry, note_text in matches:
+        title = escape_markdown(entry.get("title") or _title_from_text(entry.get("text", "")) or entry["key"])
+        lines.append(f"• `{entry['key']}` {title}\n  _{escape_markdown(note_text)}_")
+    return "\n".join(lines)
+
+
+def format_weekly_digest(votes, reading_log):
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=7)
+    recent = []
+    for entry in reading_log.get("papers", {}).values():
+        ts = entry.get("status_ts") or entry.get("sent_ts") or entry.get("created_ts")
+        try:
+            parsed = datetime.fromisoformat(ts) if ts else None
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed >= cutoff:
+            recent.append(entry)
+
+    counts = {}
+    for entry in recent:
+        status = entry.get("status", "sent")
+        counts[status] = counts.get(status, 0) + 1
+
+    queue = [
+        entry for entry in _sorted_papers(reading_log)
+        if entry.get("status") in ("saved", "sent")
+    ]
+    deep_read = choose_deep_read_candidate(votes, reading_log)
+    topics = top_topics_for_entries(recent or queue)
+
+    lines = [
+        "*Weekly reading digest*",
+        f"Saved: {counts.get('saved', 0)}",
+        f"Read: {counts.get('read', 0)}",
+        f"Skipped: {counts.get('skipped', 0)}",
+    ]
+    if topics:
+        lines.append("Themes: " + ", ".join(f"`{escape_markdown(t)}`" for t, _ in topics))
+    if deep_read:
+        title = escape_markdown(deep_read.get("title") or _title_from_text(deep_read.get("text", "")) or deep_read["key"])
+        lines.append(f"\n*Deep read pick*\n`{deep_read['key']}` {title}")
+        if deep_read.get("url"):
+            lines.append(deep_read["url"])
+    if queue:
+        lines.append("\n*Unread queue*")
+        for entry in queue[:5]:
+            title = escape_markdown(entry.get("title") or _title_from_text(entry.get("text", "")) or entry["key"])
+            lines.append(f"• `{entry['key']}` {title}")
+    return "\n".join(lines)
 
 
 # ---------- votes ----------
@@ -337,14 +590,75 @@ def handle_vote_command(text, votes):
     return bool(recorded), "\n".join(lines) or "Nothing recorded."
 
 
-def handle_callback(token, chat_id, callback, votes):
-    """Record an owner per-paper 👍/👎 vote button. Returns True if votes mutated."""
+def _latest_batch_entry(votes, n):
+    entry = votes.get("last_batch", {}).get(n)
+    if not isinstance(entry, dict):
+        return None
+    key = entry.get("key")
+    text_value = entry.get("text")
+    if not key or not text_value:
+        return None
+    return entry
+
+
+def handle_reading_status_command(text, votes, reading_log):
+    """Handle `/later`, `/read`, and `/skip` for latest-batch numbers."""
+    parts = text.strip().split()
+    cmd = parts[0].lower()
+    nums = parts[1:]
+    if not nums:
+        return False, f"Usage: `{cmd} <number> [number …]` — numbers from the latest batch."
+
+    status_by_cmd = {"/later": "saved", "/read": "read", "/skip": "skipped"}
+    status = status_by_cmd[cmd]
+    verb = {"saved": "saved for later", "read": "marked read", "skipped": "skipped"}[status]
+    recorded, missing = [], []
+    for n in nums:
+        entry = _latest_batch_entry(votes, n)
+        if entry is None:
+            missing.append(n)
+            continue
+        update_reading_status(
+            reading_log,
+            entry["key"],
+            entry["text"],
+            status,
+            score=entry.get("score"),
+        )
+        if status == "skipped":
+            _record_vote(votes, entry["key"], entry["text"], "dislike")
+        recorded.append(n)
+
+    lines = []
+    if recorded:
+        lines.append(f"{verb}: {', '.join(recorded)}")
+    if missing:
+        lines.append(f"not found: {', '.join(missing)}")
+    return bool(recorded), "\n".join(lines) or "Nothing recorded."
+
+
+def handle_note_command(text, votes, reading_log):
+    parts = text.strip().split(maxsplit=2)
+    if len(parts) < 3:
+        return False, "Usage: `/note <number> <note>` — number from the latest batch."
+    _, n, note = parts
+    entry = _latest_batch_entry(votes, n)
+    if entry is None:
+        return False, f"Paper `{n}` not found in the latest batch."
+    add_paper_note(reading_log, entry["key"], entry["text"], note.strip())
+    return True, f"Note saved for `{n}`."
+
+
+def handle_callback(token, chat_id, callback, votes, reading_log):
+    """Record owner per-paper vote/reading buttons. Returns (votes_changed, reading_changed)."""
     cb_id = callback["id"]
     parts = callback.get("data", "").split(":", 2)
-    if len(parts) != 3 or parts[0] != "v" or parts[1] not in ("like", "dislike"):
+    valid_vote = len(parts) == 3 and parts[0] == "v" and parts[1] in ("like", "dislike")
+    valid_habit = len(parts) == 3 and parts[0] == "h" and parts[1] in ("later", "read", "skip")
+    if not valid_vote and not valid_habit:
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
-        return False
-    _, action, key = parts
+        return False, False
+    kind, action, key = parts
 
     text_value = None
     # Primary source: latest batch payload (small and durable).
@@ -359,29 +673,42 @@ def handle_callback(token, chat_id, callback, votes):
             callback_query_id=cb_id,
             text="Paper context expired; vote from latest batch.",
         )
-        return False
+        return False, False
 
-    _record_vote(votes, key, text_value, action)
+    if kind == "v":
+        _record_vote(votes, key, text_value, action)
+        toast = f"Recorded {'👍' if action == 'like' else '👎'}"
+        votes_changed = True
+        reading_changed = False
+    else:
+        status = {"later": "saved", "read": "read", "skip": "skipped"}[action]
+        update_reading_status(reading_log, key, text_value, status)
+        if action == "skip":
+            _record_vote(votes, key, text_value, "dislike")
+        toast = {"later": "Saved for later", "read": "Marked read", "skip": "Skipped"}[action]
+        votes_changed = action == "skip"
+        reading_changed = True
     telegram_call(
         token, "answerCallbackQuery",
         callback_query_id=cb_id,
-        text=f"Recorded {'👍' if action == 'like' else '👎'}",
+        text=toast,
     )
-    return True
+    return votes_changed, reading_changed
 
 
-def process_telegram_updates(token, chat_id, cfg, votes):
+def process_telegram_updates(token, chat_id, cfg, votes, reading_log):
     """Poll Telegram; apply owner commands + vote callbacks.
-    Returns (cfg_changed, votes_changed)."""
+    Returns (cfg_changed, votes_changed, reading_changed)."""
     try:
         owner_id = int(chat_id)
     except (TypeError, ValueError):
         print("CHAT_ID is not an integer; skipping update processing.", file=sys.stderr)
-        return False, False
+        return False, False, False
 
     updates = fetch_updates(token, cfg["last_update_id"])
     cfg_changed = False
     votes_changed = False
+    reading_changed = False
 
     for upd in updates:
         cfg["last_update_id"] = max(cfg["last_update_id"], upd.get("update_id", 0))
@@ -391,8 +718,11 @@ def process_telegram_updates(token, chat_id, cfg, votes):
             sender = cb.get("from", {}).get("id")
             if sender != owner_id:
                 continue
-            if handle_callback(token, chat_id, cb, votes):
+            vote_mutated, reading_mutated = handle_callback(token, chat_id, cb, votes, reading_log)
+            if vote_mutated:
                 votes_changed = True
+            if reading_mutated:
+                reading_changed = True
             continue
 
         msg = upd.get("message") or upd.get("edited_message")
@@ -410,13 +740,19 @@ def process_telegram_updates(token, chat_id, cfg, votes):
             if changed:
                 votes_changed = True
             continue
-        mutated, reply = handle_command(text, cfg, votes)
+        command = text.strip().split()[0].lower()
+        mutated, reply = handle_command(text, cfg, votes, reading_log)
         if reply:
             send_message(token, chat_id, reply)
         if mutated:
-            cfg_changed = True
+            if command in ("/later", "/read", "/skip", "/note"):
+                reading_changed = True
+                if command == "/skip":
+                    votes_changed = True
+            else:
+                cfg_changed = True
 
-    return cfg_changed, votes_changed
+    return cfg_changed, votes_changed, reading_changed
 
 
 # ---------- arxiv ----------
@@ -575,10 +911,17 @@ def format_paper(paper, index):
 
 def vote_keyboard(key):
     return {
-        "inline_keyboard": [[
-            {"text": "👍 Like", "callback_data": f"v:like:{key}"},
-            {"text": "👎 Dislike", "callback_data": f"v:dislike:{key}"},
-        ]]
+        "inline_keyboard": [
+            [
+                {"text": "👍 Like", "callback_data": f"v:like:{key}"},
+                {"text": "👎 Dislike", "callback_data": f"v:dislike:{key}"},
+            ],
+            [
+                {"text": "Read later", "callback_data": f"h:later:{key}"},
+                {"text": "Read", "callback_data": f"h:read:{key}"},
+                {"text": "Skip", "callback_data": f"h:skip:{key}"},
+            ],
+        ]
     }
 
 
@@ -688,6 +1031,52 @@ def cap_total(papers, limit):
     return papers[:limit]
 
 
+def select_with_serendipity(scored_papers, floor, total_limit, slots):
+    """Reserve a small slot for near-miss papers when the preference filter is active."""
+    if slots <= 0 or total_limit <= 1:
+        return [p for p, s in scored_papers if s >= floor]
+
+    relevant = [(p, s) for p, s in scored_papers if s >= floor]
+    near_misses = [(p, s) for p, s in scored_papers if s < floor]
+    base_limit = max(total_limit - slots, 1)
+    selected = relevant[:base_limit]
+    used = {paper_key(p) for p, _ in selected}
+
+    wildcards = []
+    for paper, score_value in near_misses:
+        if paper_key(paper) in used:
+            continue
+        wildcards.append((paper, score_value))
+        used.add(paper_key(paper))
+        if len(wildcards) >= slots:
+            break
+
+    if wildcards:
+        return [p for p, _ in selected + wildcards]
+    return [p for p, _ in relevant]
+
+
+def choose_deep_read_candidate(votes, reading_log):
+    candidates = [
+        entry for entry in reading_log.get("papers", {}).values()
+        if entry.get("status") in ("saved", "sent") and entry.get("text")
+    ]
+    if not candidates:
+        return None
+
+    model = build_model(votes) if filter_active(votes) else None
+    scored = []
+    for entry in candidates:
+        if model is not None:
+            score_value = recommender.score(entry["text"], model)
+        else:
+            score_value = float(entry.get("score", 0.0) or 0.0)
+        status_bonus = 0.25 if entry.get("status") == "saved" else 0.0
+        scored.append((score_value + status_bonus, entry.get("status_ts") or entry.get("sent_ts") or "", entry))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return scored[0][2]
+
+
 # ---------- main ----------
 
 def main():
@@ -696,6 +1085,11 @@ def main():
         "--commands-only",
         action="store_true",
         help="Only process queued Telegram updates (commands + votes); skip arXiv fetch.",
+    )
+    parser.add_argument(
+        "--weekly-digest",
+        action="store_true",
+        help="Send the reading digest and skip arXiv fetch.",
     )
     args = parser.parse_args()
 
@@ -707,16 +1101,25 @@ def main():
 
     cfg = load_config()
     votes = load_votes()
+    reading_log = load_reading_log()
 
     # 1. process pending /commands + callback votes
-    cfg_changed, votes_changed = process_telegram_updates(token, chat_id, cfg, votes)
+    cfg_changed, votes_changed, reading_changed = process_telegram_updates(token, chat_id, cfg, votes, reading_log)
     save_config(cfg)  # always — last_update_id advances
     if votes_changed:
         save_votes(votes)
+    if reading_changed:
+        save_reading_log(reading_log)
     if cfg_changed:
         print("Config mutated by Telegram command(s) this run.")
     if votes_changed:
         print("Votes mutated by callback(s) this run.")
+    if reading_changed:
+        print("Reading log mutated by Telegram action(s) this run.")
+
+    if args.weekly_digest:
+        send_message(token, chat_id, format_weekly_digest(votes, reading_log))
+        return
 
     if args.commands_only:
         return
@@ -739,11 +1142,12 @@ def main():
         # Primary objective: personal relevance. Secondary: freshness.
         scored.sort(key=lambda ps: (ps[1], ps[0].published), reverse=True)
         scored = apply_diversity_guardrail(scored, DIVERSITY_MAX_JACCARD)
-        kept = [p for p, s in scored if s >= floor]
+        kept = select_with_serendipity(scored, floor, MAX_PAPERS_PER_RUN, SERENDIPITY_SLOTS)
         score_by_key = {paper_key(p): s for p, s in scored}
         print(
             f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
-            f"{len(kept)} passed filter (threshold {floor:.2f})."
+            f"{len(kept)} selected with {SERENDIPITY_SLOTS} serendipity slot(s) "
+            f"(threshold {floor:.2f})."
         )
         to_send = kept
     else:
@@ -799,6 +1203,7 @@ def main():
         )
         if msg_id is not None:
             newly_sent.append(key)
+            record_sent_paper(reading_log, paper, score=score_by_key.get(key, math.nan))
             # Keep only the latest batch payload for command/callback voting.
             last_batch[str(i)] = {"key": key, "text": text_value}
             if key in score_by_key:
@@ -810,6 +1215,7 @@ def main():
         save_config(cfg)
         votes["last_batch"] = last_batch
         save_votes(votes)
+        save_reading_log(reading_log)
         print(f"Sent {len(newly_sent)} messages.")
 
 

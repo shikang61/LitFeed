@@ -2,7 +2,7 @@
 
 Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions.
 
-Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see.
+Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 and reading-habit buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see, and use the reading log to save, read, skip, and annotate papers.
 
 ## Setup
 
@@ -46,6 +46,13 @@ Send commands directly to your bot. They are processed at the start of the next 
 | `/reset`               | Restore default categories         |
 | `/like N [N …]`        | Like papers by number from the latest batch |
 | `/dislike N [N …]`     | Dislike papers by number from the latest batch |
+| `/later N [N …]`       | Save papers for later reading |
+| `/read N [N …]`        | Mark papers as read |
+| `/skip N [N …]`        | Skip papers and train them as negative examples |
+| `/note N <text>`       | Attach a note to a paper from the latest batch |
+| `/queue`               | Show saved/unread papers |
+| `/notes [query]`       | Search paper notes |
+| `/digest`              | Send a weekly-style reading digest immediately |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
 
@@ -56,7 +63,21 @@ Each paper message includes 👍/👎 buttons. Votes are stored in `votes.json` 
 - **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
 - **Vote anytime**: the poll workflow (every 5 min) records votes via Telegram callbacks. You can re-vote on the same paper; the latest vote wins.
 - **Batch vote**: each paper in the daily run is numbered (`[1]`, `[2]`, …). Reply with `/like 1 3 5` and/or `/dislike 2 4` to vote on several at once in one message — the numbers refer to the most recent batch. Faster than tapping each paper's button, and one message = one poll cycle.
-- **Cache**: last 500 sent papers' text is cached in `votes.json` so callback handlers can reconstruct the document for training. Voting on older papers (beyond the cache) is rejected with a toast.
+- **Latest batch**: the most recent batch is stored compactly in `votes.json` so batch commands and callback buttons can reconstruct the document for training.
+- **Serendipity slot**: when the filter is active, one daily slot is reserved for a near-miss paper so the feed can still surface adjacent ideas instead of collapsing too narrowly around old likes.
+
+## Reading habit loop
+
+LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include `Read later`, `Read`, and `Skip` buttons:
+
+- `Read later` saves a paper to your queue.
+- `Read` marks it as read.
+- `Skip` marks it as skipped and records it as a negative training example.
+- `/note N <text>` adds a lightweight literature note to paper `N` from the latest batch.
+- `/queue` and `/notes [query]` retrieve your saved papers and notes from Telegram.
+- `/digest` sends a weekly-style digest with saved/read/skipped counts, recurring topics, an unread queue, and one deep-read pick.
+
+The `Weekly Reading Digest` workflow runs once per week and calls `python main.py --weekly-digest`.
 
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
 
@@ -67,7 +88,9 @@ Edit `main.py` defaults or tune knobs:
 - `LOOKBACK_HOURS` — fetch window (default 26h, matches once-daily cron with drift margin).
 - `SNIPPET_CHARS` — abstract preview length in the Telegram message.
 - `MIN_VOTES_PER_SIDE` — votes needed per side before the filter activates (default 10).
-- `MAX_SENT_CACHE` — paper-text cache size for vote callbacks (default 500).
+- `MAX_PAPERS_PER_RUN` — total daily paper cap (default 5).
+- `SERENDIPITY_SLOTS` — active-filter daily slots reserved for near-miss papers (default 1).
+- `TOPIC_KEYWORDS` — lightweight topic labels shown in `/stats` and the weekly digest.
 
 ## Local testing
 

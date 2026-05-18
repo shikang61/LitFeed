@@ -42,10 +42,10 @@ jobs:
 
       - name: Commit state changes
         run: |
-          if ! git diff --quiet config.json votes.json 2>/dev/null; then
+          if [[ -n "$(git status --porcelain -- config.json votes.json reading_log.json)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add config.json votes.json 2>/dev/null || true
+            git add config.json votes.json reading_log.json 2>/dev/null || true
             git commit -m "chore: update state from daily run" || exit 0
             git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push

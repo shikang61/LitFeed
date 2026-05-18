@@ -1,9 +1,9 @@
-name: Poll Telegram Commands
+name: Weekly Reading Digest
 
 on:
   schedule:
-    # Every 5 minutes (GitHub cron may drift to 10-15 min under load).
-    - cron: "*/5 * * * *"
+    # Sunday evening Cambridge time during standard time; cron is UTC.
+    - cron: "0 18 * * 0"
   workflow_dispatch:
 
 env:
@@ -13,14 +13,13 @@ permissions:
   contents: write
 
 concurrency:
-  # Only one polling run at a time. Prevents pushing stale config over a newer one.
   group: telegram-poll
   cancel-in-progress: false
 
 jobs:
-  poll:
+  digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,11 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Process Telegram commands
+      - name: Send weekly reading digest
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python main.py --commands-only
+        run: python main.py --weekly-digest
 
       - name: Commit state changes
         run: |
@@ -48,8 +47,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add config.json votes.json reading_log.json 2>/dev/null || true
-            git commit -m "chore: update state from Telegram poll" || exit 0
-            # Rebase in case daily_papers workflow pushed concurrently.
+            git commit -m "chore: update state from weekly digest" || exit 0
             git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push
           else
