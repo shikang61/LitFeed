@@ -90,6 +90,7 @@ MAX_SENT_IDS = 500
 MAX_SENT_CACHE = 500
 MIN_VOTES_PER_SIDE = 10
 PER_CATEGORY_LIMIT = 2
+MAX_PAPERS_PER_RUN = 5
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -550,6 +551,11 @@ def cap_per_category(papers, limit):
     return kept
 
 
+def cap_total(papers, limit):
+    """Keep at most `limit` papers, preserving input order."""
+    return papers[:limit]
+
+
 def prune_sent_cache(votes):
     cache = votes["sent_cache"]
     excess = len(cache) - MAX_SENT_CACHE
@@ -622,6 +628,10 @@ def main():
     before_cap = len(to_send)
     to_send = cap_per_category(to_send, PER_CATEGORY_LIMIT)
     print(f"Capped per-category ({PER_CATEGORY_LIMIT}): {before_cap} → {len(to_send)}.")
+
+    before_total_cap = len(to_send)
+    to_send = cap_total(to_send, MAX_PAPERS_PER_RUN)
+    print(f"Capped total per run ({MAX_PAPERS_PER_RUN}): {before_total_cap} → {len(to_send)}.")
 
     if not papers:
         run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

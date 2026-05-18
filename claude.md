@@ -1,6 +1,6 @@
 # Project Overview
 
-LitFeed is an autonomous daily arXiv → Telegram alerter. Each run fetches newly
+LitFeed is an autonomous intra-day arXiv → Telegram alerter. Each run fetches newly
 announced papers in the configured arXiv categories, ranks them with a
 preference filter learned from the user's 👍/👎 votes, and pushes the survivors
 to Telegram with vote buttons. It runs unattended on GitHub Actions.
@@ -31,7 +31,8 @@ A run (`python main.py`) does two things in order:
    * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
      score each paper with the TF-IDF recommender and keep score > 0.
      Otherwise (cold start) send everything.
-   * Cap to `PER_CATEGORY_LIMIT` (2) papers per primary category.
+  * Cap to `PER_CATEGORY_LIMIT` (2) papers per primary category and
+    `MAX_PAPERS_PER_RUN` (5) total papers per run.
    * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
      `sent_ids` and `votes["sent_cache"]`.
 
@@ -48,7 +49,7 @@ lazily so `--commands-only` runs don't need it.
 `/like N [N …]`, `/dislike N [N …]`, `/stats`, `/help`. Non-owner senders are
 ignored.
 
-Two ways to vote. Per-paper `v:like:`/`v:dislike:` inline buttons on each daily
+Two ways to vote. Per-paper `v:like:`/`v:dislike:` inline buttons on each run
 message (`handle_callback`). Or batch: the daily run numbers each paper (`[1]`,
 `[2]`, …) and stores the number→key map in `votes["last_batch"]`; `/like` /
 `/dislike` (`handle_vote_command`) resolve numbers against it. One text message
@@ -70,8 +71,8 @@ and quantitative finance). The live set is whatever is in `config.json`.
 ## GitHub Actions
 
 * `daily_papers.yml` — full run. Triggered by `repository_dispatch`
-  (`run-paper-alerter`, fired by cron-job.org), a fallback `schedule` cron, and
-  `workflow_dispatch`. Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
+  (`run-paper-alerter`, fired by cron-job.org) and `workflow_dispatch`.
+  Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
 * `poll_commands.yml` — every 5 minutes, `python main.py --commands-only`, so
   commands/votes are handled promptly without waiting for the daily run.
 
