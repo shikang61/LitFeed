@@ -267,6 +267,20 @@ def send_message(token, chat_id, text, markdown=True, reply_markup=None):
     return None
 
 
+def edit_message_keyboard(token, chat_id, message_id, reply_markup):
+    return telegram_call(
+        token,
+        "editMessageReplyMarkup",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=json.dumps(reply_markup),
+    )
+
+
+def delete_message(token, chat_id, message_id):
+    return telegram_call(token, "deleteMessage", chat_id=chat_id, message_id=message_id)
+
+
 def fetch_updates(token, offset):
     """Return list of new updates (messages + callback_query) with id > offset."""
     result = telegram_call(
@@ -654,11 +668,37 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
     cb_id = callback["id"]
     parts = callback.get("data", "").split(":", 2)
     valid_vote = len(parts) == 3 and parts[0] == "v" and parts[1] in ("like", "dislike")
-    valid_habit = len(parts) == 3 and parts[0] == "h" and parts[1] in ("later", "read", "skip")
+    valid_habit = (
+        len(parts) == 3
+        and parts[0] == "h"
+        and parts[1] in ("later", "read", "skip", "delete", "confirm_delete", "cancel_delete")
+    )
     if not valid_vote and not valid_habit:
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
         return False, False
     kind, action, key = parts
+
+    message = callback.get("message") or {}
+    message_id = message.get("message_id")
+
+    if kind == "h" and action in ("delete", "confirm_delete", "cancel_delete"):
+        if not message_id:
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
+            return False, False
+        if action == "delete":
+            edit_message_keyboard(token, chat_id, message_id, delete_confirmation_keyboard(key))
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Confirm deletion?")
+            return False, False
+        if action == "cancel_delete":
+            edit_message_keyboard(token, chat_id, message_id, vote_keyboard(key))
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deletion cancelled.")
+            return False, False
+        result = delete_message(token, chat_id, message_id)
+        if result and result.get("ok"):
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deleted.")
+        else:
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not delete message.")
+        return False, False
 
     text_value = None
     # Primary source: latest batch payload (small and durable).
@@ -913,13 +953,18 @@ def vote_keyboard(key):
     return {
         "inline_keyboard": [
             [
-                {"text": "👍 Like", "callback_data": f"v:like:{key}"},
-                {"text": "👎 Dislike", "callback_data": f"v:dislike:{key}"},
+                {"text": "Delete", "callback_data": f"h:delete:{key}"},
             ],
+        ]
+    }
+
+
+def delete_confirmation_keyboard(key):
+    return {
+        "inline_keyboard": [
             [
-                {"text": "Read later", "callback_data": f"h:later:{key}"},
-                {"text": "Read", "callback_data": f"h:read:{key}"},
-                {"text": "Skip", "callback_data": f"h:skip:{key}"},
+                {"text": "Confirm delete", "callback_data": f"h:confirm_delete:{key}"},
+                {"text": "Cancel", "callback_data": f"h:cancel_delete:{key}"},
             ],
         ]
     }

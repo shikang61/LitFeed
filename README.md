@@ -68,11 +68,12 @@ Each paper message includes 👍/👎 buttons. Votes are stored in `votes.json` 
 
 ## Reading habit loop
 
-LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include `Read later`, `Read`, and `Skip` buttons:
+LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include a `Delete` button:
 
-- `Read later` saves a paper to your queue.
-- `Read` marks it as read.
-- `Skip` marks it as skipped and records it as a negative training example.
+- `Delete` first asks for confirmation, then deletes the Telegram message.
+- `/later N [N …]` saves papers to your queue.
+- `/read N [N …]` marks papers as read.
+- `/skip N [N …]` marks papers as skipped and records them as negative training examples.
 - `/note N <text>` adds a lightweight literature note to paper `N` from the latest batch.
 - `/queue` and `/notes [query]` retrieve your saved papers and notes from Telegram.
 - `/digest` sends a weekly-style digest with saved/read/skipped counts, recurring topics, an unread queue, and one deep-read pick.
