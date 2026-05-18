@@ -28,13 +28,15 @@ A run (`python main.py`) does two things in order:
    * Keep only `announce_type` `new`/`cross`; dedup cross-listed papers; drop
      anything older than `LOOKBACK_HOURS` (36) as a defensive floor.
    * Drop papers already in `config.json`'s `sent_ids`.
-   * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
-     score each paper with the TF-IDF recommender and keep score > 0.
-     Otherwise (cold start) send everything.
-  * Cap to `PER_CATEGORY_LIMIT` (2) papers per primary category and
-    `MAX_PAPERS_PER_RUN` (5) total papers per run.
+  * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
+    score each paper with the TF-IDF recommender (recency-weighted votes), rank
+    by relevance then freshness, apply a diversity guardrail, and keep papers
+    above a dynamic relevance floor. Otherwise (cold start), send freshest
+    papers with the same diversity guardrail.
+   * Cap to `MAX_PAPERS_PER_RUN` (5) total papers per run. Category capping can
+     be disabled so the best papers win globally.
    * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
-     `sent_ids` and `votes["sent_cache"]`.
+     `sent_ids` and `votes["last_batch"]`.
 
 ### Recommender (`recommender.py`)
 
@@ -46,23 +48,22 @@ lazily so `--commands-only` runs don't need it.
 ## Telegram Commands (owner only)
 
 `/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`,
-`/like N [N …]`, `/dislike N [N …]`, `/stats`, `/help`. Non-owner senders are
-ignored.
+`/like N [N …]`, `/dislike N [N …]`, `/why N`, `/stats`, `/help`. Non-owner
+senders are ignored.
 
 Two ways to vote. Per-paper `v:like:`/`v:dislike:` inline buttons on each run
-message (`handle_callback`). Or batch: the daily run numbers each paper (`[1]`,
-`[2]`, …) and stores the number→key map in `votes["last_batch"]`; `/like` /
-`/dislike` (`handle_vote_command`) resolve numbers against it. One text message
-votes a whole batch in a single poll cycle — no per-tap callback lag.
+message (`handle_callback`). Or batch: each run numbers papers (`[1]`, `[2]`,
+…) and stores the number→paper map in `votes["last_batch"]`; `/like` /
+`/dislike` (`handle_vote_command`) resolve numbers against it. `/why N`
+explains why paper `N` matched your profile.
 
 ## State Files (committed back to the repo by CI)
 
 * `config.json` — `categories`, `last_update_id` (Telegram offset), `sent_ids`
   (dedup ring buffer, capped at `MAX_SENT_IDS`).
-* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`); `sent_cache`
-  (key → `{text, message_id}`, capped at `MAX_SENT_CACHE`) so vote callbacks
-  can recover a paper's text; `last_batch` (batch number → key) for `/like`
-  and `/dislike`.
+* `votes.json` — `liked`, `disliked` (each `{key, text, ts}`); `last_batch`
+  (batch number → `{key, text}`) for `/like` / `/dislike` and callback votes.
+  This keeps runtime state compact and avoids long-lived sent caches.
 
 `DEFAULT_CATEGORIES` in `main.py` is the seed list (CS / math / physics /
 q-fin / stats — reflecting interests in computational physics, plasma/fusion,

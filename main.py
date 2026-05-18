@@ -14,6 +14,7 @@ Commands (owner only):
   /reset                 → restore defaults
   /like N [N ...]        → like papers by number from the latest batch
   /dislike N [N ...]     → dislike papers by number from the latest batch
+  /why N                 → explain why paper N matched your profile
   /stats                 → show vote counts + filter status
   /help                  → command list
 """
@@ -21,7 +22,9 @@ Commands (owner only):
 import argparse
 import calendar
 import json
+import math
 import os
+import re
 import sys
 import time
 from collections import namedtuple
@@ -87,10 +90,14 @@ ARXIV_BACKOFF_BASE = 30  # seconds; backoff is 30, 60, 120 between attempts
 ARXIV_USER_AGENT = "LitFeed/1.0 (https://github.com/shikang61/LitFeed)"
 SNIPPET_CHARS = 300
 MAX_SENT_IDS = 500
-MAX_SENT_CACHE = 500
 MIN_VOTES_PER_SIDE = 10
-PER_CATEGORY_LIMIT = 2
+# Set to 0 to disable category quota and let best papers win globally.
+PER_CATEGORY_LIMIT = 0
 MAX_PAPERS_PER_RUN = 5
+RECENCY_HALF_LIFE_DAYS = 45
+EARLY_ACTIVE_EXTRA_VOTES = 5
+EARLY_ACTIVE_RELEVANCE_FLOOR = -0.03
+DIVERSITY_MAX_JACCARD = 0.85
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
@@ -119,13 +126,25 @@ def save_config(cfg):
 
 def load_votes():
     if not VOTES_PATH.exists():
-        return {"liked": [], "disliked": [], "sent_cache": {}}
+        return {"liked": [], "disliked": [], "last_batch": {}}
     with VOTES_PATH.open() as f:
         votes = json.load(f)
     votes.setdefault("liked", [])
     votes.setdefault("disliked", [])
-    votes.setdefault("sent_cache", {})
-    votes.setdefault("last_batch", {})  # batch number (str) → paper key, from last daily run
+    votes.setdefault("last_batch", {})  # batch number (str) → {"key","text"} for latest run
+    # Migrate older state to compact shape and drop large legacy caches.
+    sent_cache = votes.get("sent_cache", {}) if isinstance(votes.get("sent_cache"), dict) else {}
+    migrated_batch = {}
+    for n, entry in votes["last_batch"].items():
+        if isinstance(entry, dict):
+            migrated_batch[n] = {"key": entry.get("key"), "text": entry.get("text")}
+            continue
+        if isinstance(entry, str):
+            legacy = sent_cache.get(entry, {})
+            migrated_batch[n] = {"key": entry, "text": legacy.get("text")}
+    if migrated_batch:
+        votes["last_batch"] = migrated_batch
+    votes.pop("sent_cache", None)
     return votes
 
 
@@ -198,8 +217,38 @@ def handle_command(text, cfg, votes):
             "/reset — restore default categories\n"
             "/like N [N …] — like papers by batch number\n"
             "/dislike N [N …] — dislike papers by batch number\n"
+            "/why N — explain why a paper matched\n"
             "/stats — vote counts + filter status\n"
             "/help — this message"
+        )
+
+    if cmd == "/why":
+        if not arg:
+            return False, "Usage: `/why <number>` — number from the latest batch."
+        entry = votes.get("last_batch", {}).get(arg)
+        if not isinstance(entry, dict):
+            return False, f"Paper `{arg}` not found in the latest batch."
+        text_value = entry.get("text")
+        if not text_value:
+            return False, "No context available for that paper."
+        if not filter_active(votes):
+            return False, (
+                f"*Why {arg}?*\n"
+                "Filter is in *cold start*, so selection is currently freshness-first.\n"
+                "Once you have enough 👍 and 👎 votes, personalized matching will kick in."
+            )
+        model = build_model(votes)
+        floor = current_relevance_floor(votes)
+        score_value = entry.get("score")
+        if score_value is None:
+            score_value = recommender.score(text_value, model)
+        reasons = recommender.explain(text_value, model, top_n=5)
+        reason_text = ", ".join(f"`{escape_markdown(t)}`" for t, _ in reasons) if reasons else "_no strong token signals_"
+        return False, (
+            f"*Why {arg}?*\n"
+            f"Score: `{score_value:.3f}`\n"
+            f"Selection threshold: `{floor:.3f}`\n"
+            f"Top matched terms: {reason_text}"
         )
 
     if cmd == "/add_cat":
@@ -253,7 +302,7 @@ def _record_vote(votes, key, text, action):
 
 def handle_vote_command(text, votes):
     """Handle `/like` or `/dislike` followed by batch numbers from the latest
-    daily run. Returns (votes_changed: bool, reply: str)."""
+    run. Returns (votes_changed: bool, reply: str)."""
     parts = text.strip().split()
     action = "like" if parts[0].lower().startswith("/like") else "dislike"
     nums = parts[1:]
@@ -262,16 +311,21 @@ def handle_vote_command(text, votes):
 
     last_batch = votes.get("last_batch", {})
     if not last_batch:
-        return False, "No batch to vote on yet — wait for the next daily run."
+        return False, "No batch to vote on yet — wait for the next run."
 
     recorded, missing = [], []
     for n in nums:
-        key = last_batch.get(n)
-        cache_entry = votes["sent_cache"].get(key) if key else None
-        if not cache_entry:
+        entry = last_batch.get(n)
+        key = None
+        paper_text_value = None
+        if isinstance(entry, dict):
+            key = entry.get("key")
+            paper_text_value = entry.get("text")
+
+        if not key or not paper_text_value:
             missing.append(n)
             continue
-        _record_vote(votes, key, cache_entry["text"], action)
+        _record_vote(votes, key, paper_text_value, action)
         recorded.append(n)
 
     emoji = "👍" if action == "like" else "👎"
@@ -292,16 +346,22 @@ def handle_callback(token, chat_id, callback, votes):
         return False
     _, action, key = parts
 
-    cache_entry = votes["sent_cache"].get(key)
-    if not cache_entry:
+    text_value = None
+    # Primary source: latest batch payload (small and durable).
+    for entry in votes.get("last_batch", {}).values():
+        if isinstance(entry, dict) and entry.get("key") == key:
+            text_value = entry.get("text")
+            if text_value:
+                break
+    if not text_value:
         telegram_call(
             token, "answerCallbackQuery",
             callback_query_id=cb_id,
-            text="Paper not in cache (too old).",
+            text="Paper context expired; vote from latest batch.",
         )
         return False
 
-    _record_vote(votes, key, cache_entry["text"], action)
+    _record_vote(votes, key, text_value, action)
     telegram_call(
         token, "answerCallbackQuery",
         callback_query_id=cb_id,
@@ -522,6 +582,17 @@ def vote_keyboard(key):
     }
 
 
+def format_run_summary(selected_count, candidate_count, filter_is_active):
+    mode = "active" if filter_is_active else "cold start"
+    run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        f"*Run summary*\n"
+        f"Selected: *{selected_count}* of *{candidate_count}* candidates\n"
+        f"Filter mode: *{mode}*\n"
+        f"Run: `{run_time}`"
+    )
+
+
 # ---------- recommender wiring ----------
 
 def filter_active(votes):
@@ -531,15 +602,76 @@ def filter_active(votes):
     )
 
 
+def _parse_vote_time(vote):
+    raw = vote.get("ts")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def vote_recency_weight(vote, now):
+    ts = _parse_vote_time(vote)
+    if ts is None:
+        return 1.0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age_days = max((now - ts).total_seconds() / 86400.0, 0.0)
+    return 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
+
+
 def build_model(votes):
+    now = datetime.now(timezone.utc)
+    liked = votes["liked"]
+    disliked = votes["disliked"]
     return recommender.fit(
-        [v["text"] for v in votes["liked"]],
-        [v["text"] for v in votes["disliked"]],
+        [v["text"] for v in liked],
+        [v["text"] for v in disliked],
+        liked_weights=[vote_recency_weight(v, now) for v in liked],
+        disliked_weights=[vote_recency_weight(v, now) for v in disliked],
     )
+
+
+def current_relevance_floor(votes):
+    min_side = min(len(votes["liked"]), len(votes["disliked"]))
+    if min_side < MIN_VOTES_PER_SIDE:
+        return None
+    if min_side < (MIN_VOTES_PER_SIDE + EARLY_ACTIVE_EXTRA_VOTES):
+        return EARLY_ACTIVE_RELEVANCE_FLOOR
+    return 0.0
+
+
+def tokenize_for_diversity(text):
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def jaccard_similarity(a_tokens, b_tokens):
+    if not a_tokens or not b_tokens:
+        return 0.0
+    inter = len(a_tokens & b_tokens)
+    union = len(a_tokens | b_tokens)
+    return inter / union if union else 0.0
+
+
+def apply_diversity_guardrail(scored_papers, threshold):
+    """Keep ranking order but skip near-duplicates by text similarity."""
+    kept = []
+    kept_tokens = []
+    for paper, score_value in scored_papers:
+        tokens = tokenize_for_diversity(f"{paper.title} {paper.summary}")
+        if any(jaccard_similarity(tokens, prev) >= threshold for prev in kept_tokens):
+            continue
+        kept.append((paper, score_value))
+        kept_tokens.append(tokens)
+    return kept
 
 
 def cap_per_category(papers, limit):
     """Keep first `limit` papers per primary_category, preserve input order."""
+    if limit <= 0:
+        return papers
     counts = {}
     kept = []
     for p in papers:
@@ -554,15 +686,6 @@ def cap_per_category(papers, limit):
 def cap_total(papers, limit):
     """Keep at most `limit` papers, preserving input order."""
     return papers[:limit]
-
-
-def prune_sent_cache(votes):
-    cache = votes["sent_cache"]
-    excess = len(cache) - MAX_SENT_CACHE
-    if excess <= 0:
-        return
-    for key in list(cache.keys())[:excess]:
-        del cache[key]
 
 
 # ---------- main ----------
@@ -607,27 +730,40 @@ def main():
 
     sent_ids = set(cfg["sent_ids"])
     fresh = [p for p in papers if paper_key(p) not in sent_ids]
+    score_by_key = {}
 
     if filter_active(votes):
         model = build_model(votes)
+        floor = current_relevance_floor(votes)
         scored = [(p, recommender.score(paper_text(p), model)) for p in fresh]
-        scored.sort(key=lambda ps: ps[1], reverse=True)
-        kept = [p for p, s in scored if s > 0]
+        # Primary objective: personal relevance. Secondary: freshness.
+        scored.sort(key=lambda ps: (ps[1], ps[0].published), reverse=True)
+        scored = apply_diversity_guardrail(scored, DIVERSITY_MAX_JACCARD)
+        kept = [p for p, s in scored if s >= floor]
+        score_by_key = {paper_key(p): s for p, s in scored}
         print(
             f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
-            f"{len(kept)} passed filter (threshold 0)."
+            f"{len(kept)} passed filter (threshold {floor:.2f})."
         )
         to_send = kept
     else:
+        # Cold start: no relevance model yet, so use freshest-first globally.
+        fresh.sort(key=lambda p: p.published, reverse=True)
+        cold_scored = [(p, math.nan) for p in fresh]
+        cold_scored = apply_diversity_guardrail(cold_scored, DIVERSITY_MAX_JACCARD)
         print(
             f"Fetched {len(papers)} papers; {len(fresh)} new after dedup; "
-            f"filter cold (likes={len(votes['liked'])}, dislikes={len(votes['disliked'])}) — sending all."
+            f"filter cold (likes={len(votes['liked'])}, dislikes={len(votes['disliked'])}) "
+            f"— sending freshest with diversity guardrail ({len(cold_scored)} survivors)."
         )
-        to_send = fresh
+        to_send = [p for p, _ in cold_scored]
 
-    before_cap = len(to_send)
-    to_send = cap_per_category(to_send, PER_CATEGORY_LIMIT)
-    print(f"Capped per-category ({PER_CATEGORY_LIMIT}): {before_cap} → {len(to_send)}.")
+    if PER_CATEGORY_LIMIT > 0:
+        before_cap = len(to_send)
+        to_send = cap_per_category(to_send, PER_CATEGORY_LIMIT)
+        print(f"Capped per-category ({PER_CATEGORY_LIMIT}): {before_cap} → {len(to_send)}.")
+    else:
+        print("Per-category cap disabled: best papers win globally.")
 
     before_total_cap = len(to_send)
     to_send = cap_total(to_send, MAX_PAPERS_PER_RUN)
@@ -641,28 +777,38 @@ def main():
             f"_No papers fetched from arXiv_\nRun: `{run_time}`",
         )
 
+    if to_send:
+        send_message(
+            token,
+            chat_id,
+            format_run_summary(
+                selected_count=len(to_send),
+                candidate_count=len(fresh),
+                filter_is_active=filter_active(votes),
+            ),
+        )
+
     newly_sent = []
     last_batch = {}
     for i, paper in enumerate(to_send, start=1):
         key = paper_key(paper)
+        text_value = paper_text(paper)
         msg_id = send_message(
             token, chat_id, format_paper(paper, i),
             reply_markup=vote_keyboard(key),
         )
         if msg_id is not None:
             newly_sent.append(key)
-            last_batch[str(i)] = key
-            votes["sent_cache"][key] = {
-                "text": paper_text(paper),
-                "message_id": msg_id,
-            }
+            # Keep only the latest batch payload for command/callback voting.
+            last_batch[str(i)] = {"key": key, "text": text_value}
+            if key in score_by_key:
+                last_batch[str(i)]["score"] = round(score_by_key[key], 4)
         time.sleep(1)  # be polite to Telegram
 
     if newly_sent:
         cfg["sent_ids"] = (cfg["sent_ids"] + newly_sent)[-MAX_SENT_IDS:]
         save_config(cfg)
         votes["last_batch"] = last_batch
-        prune_sent_cache(votes)
         save_votes(votes)
         print(f"Sent {len(newly_sent)} messages.")
 
