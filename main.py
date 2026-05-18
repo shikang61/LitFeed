@@ -89,7 +89,10 @@ ARXIV_MAX_ATTEMPTS = 4
 ARXIV_BACKOFF_BASE = 30  # seconds; backoff is 30, 60, 120 between attempts
 # arXiv throttles the default python-requests User-Agent; send a descriptive one.
 ARXIV_USER_AGENT = "LitFeed/1.0 (https://github.com/shikang61/LitFeed)"
-SNIPPET_CHARS = 300
+TELEGRAM_SAFE_MESSAGE_CHARS = 3900
+GROK_API_BASE = "https://api.x.ai/v1"
+GROK_DEFAULT_MODEL = "grok-4.3"
+GROK_SUMMARY_TIMEOUT = 30
 MAX_SENT_IDS = 500
 MIN_VOTES_PER_SIDE = 10
 # Set to 0 to disable category quota and let best papers win globally.
@@ -240,6 +243,28 @@ def add_paper_note(log, key, text, note):
     return entry
 
 
+def cached_summary_for_paper(log, key):
+    entry = log.get("papers", {}).get(key, {})
+    summary = entry.get("grok_summary")
+    if isinstance(summary, dict):
+        text = summary.get("text")
+        if text:
+            return text
+    if isinstance(summary, str):
+        return summary
+    return None
+
+
+def store_grok_summary(log, key, text, model):
+    entry = _ensure_paper_log_entry(log, key)
+    entry["grok_summary"] = {
+        "text": text,
+        "model": model,
+        "ts": _now_iso(),
+    }
+    return entry
+
+
 # ---------- telegram ----------
 
 def telegram_call(token, method, **params):
@@ -279,6 +304,58 @@ def edit_message_keyboard(token, chat_id, message_id, reply_markup):
 
 def delete_message(token, chat_id, message_id):
     return telegram_call(token, "deleteMessage", chat_id=chat_id, message_id=message_id)
+
+
+def grok_summarize_paper(paper):
+    api_key = os.environ.get("GROK_API_KEY") or os.environ.get("XAI_API_KEY")
+    if not api_key:
+        return None
+
+    model = os.environ.get("GROK_MODEL") or GROK_DEFAULT_MODEL
+    api_base = os.environ.get("GROK_API_BASE") or GROK_API_BASE
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    prompt = (
+        "Summarize this arXiv paper for a physics PhD student who wants to decide "
+        "whether to read it. Use this exact structure, keep it concise, and avoid hype:\n\n"
+        "TL;DR: <one sentence>\n"
+        "Why it may matter: <one sentence>\n"
+        "Best for: <short phrase>\n\n"
+        f"Title: {paper.title.strip()}\n"
+        f"Categories: {', '.join(paper.categories)}\n"
+        f"Abstract: {paper.summary.strip()}"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise research assistant. Be concrete, technical, "
+                    "and honest about uncertainty."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 220,
+    }
+    try:
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=GROK_SUMMARY_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"].strip()
+        return {"text": text, "model": model}
+    except (KeyError, IndexError, requests.RequestException, ValueError) as e:
+        print(f"[grok] summarization failed for {paper_key(paper)}: {e}", file=sys.stderr)
+        return None
 
 
 def fetch_updates(token, offset):
@@ -927,7 +1004,7 @@ def escape_markdown(text):
     return text
 
 
-def format_paper(paper, index):
+def format_paper(paper, index, grok_summary=None):
     title = escape_markdown(latex_to_unicode(paper.title.strip().replace("\n", " ")))
     names = [a.name for a in paper.authors]
     if len(names) <= 3:
@@ -936,17 +1013,20 @@ def format_paper(paper, index):
         authors = f"{names[0]}, {names[1]}, …, {names[-1]}"
     authors = escape_markdown(latex_to_unicode(authors))
     abstract = latex_to_unicode(paper.summary.strip().replace("\n", " "))
-    if len(abstract) > SNIPPET_CHARS:
-        abstract = abstract[:SNIPPET_CHARS].rsplit(" ", 1)[0] + "…"
-    abstract = escape_markdown(abstract)
+    escaped_abstract = escape_markdown(abstract)
     categories = " ".join(f"\\[{c}]" for c in paper.categories)
-    return (
+    prefix = (
         f"*[{index}] {title}*\n"
         f"_{authors}_\n"
         f"{categories}\n\n"
-        f"{abstract}\n\n"
-        f"[arXiv:{paper.get_short_id()}]({paper.entry_id})"
     )
+    if grok_summary:
+        prefix += f"*Grok summary*\n{escape_markdown(grok_summary.strip())}\n\n"
+    suffix = f"\n\n[arXiv:{paper.get_short_id()}]({paper.entry_id})"
+    available = max(TELEGRAM_SAFE_MESSAGE_CHARS - len(prefix) - len(suffix), 0)
+    if len(escaped_abstract) > available:
+        escaped_abstract = escaped_abstract[:available].rsplit(" ", 1)[0] + "…"
+    return f"{prefix}{escaped_abstract}{suffix}"
 
 
 def vote_keyboard(key):
@@ -1122,6 +1202,18 @@ def choose_deep_read_candidate(votes, reading_log):
     return scored[0][2]
 
 
+def summary_for_paper(paper, reading_log):
+    key = paper_key(paper)
+    cached = cached_summary_for_paper(reading_log, key)
+    if cached:
+        return cached
+    summary = grok_summarize_paper(paper)
+    if not summary:
+        return None
+    store_grok_summary(reading_log, key, summary["text"], summary["model"])
+    return summary["text"]
+
+
 # ---------- main ----------
 
 def main():
@@ -1242,8 +1334,9 @@ def main():
     for i, paper in enumerate(to_send, start=1):
         key = paper_key(paper)
         text_value = paper_text(paper)
+        grok_summary = summary_for_paper(paper, reading_log)
         msg_id = send_message(
-            token, chat_id, format_paper(paper, i),
+            token, chat_id, format_paper(paper, i, grok_summary=grok_summary),
             reply_markup=vote_keyboard(key),
         )
         if msg_id is not None:

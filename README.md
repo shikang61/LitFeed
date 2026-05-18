@@ -29,6 +29,9 @@ In the repository: **Settings → Secrets and variables → Actions → New repo
 |-------------------|---------------------------------------------|
 | `TELEGRAM_TOKEN`  | The token from BotFather                    |
 | `CHAT_ID`         | The chat ID from `getUpdates`               |
+| `GROK_API_KEY`    | Optional xAI API key for Grok summaries     |
+
+Optionally set a repository variable named `GROK_MODEL` to override the default Grok model (`grok-4.3`).
 
 ### 4. Enable the workflow
 
@@ -58,7 +61,7 @@ Send commands directly to your bot. They are processed at the start of the next 
 
 ## Preference filter
 
-Each paper message includes 👍/👎 buttons. Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
+Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
 
 - **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
 - **Vote anytime**: the poll workflow (every 5 min) records votes via Telegram callbacks. You can re-vote on the same paper; the latest vote wins.
@@ -80,6 +83,10 @@ LitFeed keeps a separate `reading_log.json` state file. Daily paper messages inc
 
 The `Weekly Reading Digest` workflow runs once per week and calls `python main.py --weekly-digest`.
 
+## Grok summaries
+
+If `GROK_API_KEY` is configured, LitFeed asks Grok to summarize each paper that is actually sent to Telegram. Summaries are cached in `reading_log.json` by arXiv ID, so reruns do not regenerate the same summary. If the API key is missing or the Grok request fails, the bot falls back to the normal paper message with the full abstract.
+
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
 
 ## Customising via code
@@ -87,7 +94,8 @@ Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ign
 Edit `main.py` defaults or tune knobs:
 - `DEFAULT_CATEGORIES` — applied on `/reset` and when `config.json` is missing.
 - `LOOKBACK_HOURS` — fetch window (default 26h, matches once-daily cron with drift margin).
-- `SNIPPET_CHARS` — abstract preview length in the Telegram message.
+- `TELEGRAM_SAFE_MESSAGE_CHARS` — safety cap for paper messages; abstracts are otherwise shown in full.
+- `GROK_DEFAULT_MODEL` — default xAI model for paper summaries.
 - `MIN_VOTES_PER_SIDE` — votes needed per side before the filter activates (default 10).
 - `MAX_PAPERS_PER_RUN` — total daily paper cap (default 5).
 - `SERENDIPITY_SLOTS` — active-filter daily slots reserved for near-miss papers (default 1).
@@ -99,6 +107,7 @@ Edit `main.py` defaults or tune knobs:
 pip install -r requirements.txt
 export TELEGRAM_TOKEN=...
 export CHAT_ID=...
+export GROK_API_KEY=...  # optional
 python main.py
 ```
 
