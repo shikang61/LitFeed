@@ -93,6 +93,7 @@ TELEGRAM_SAFE_MESSAGE_CHARS = 3900
 GROK_API_BASE = "https://api.x.ai/v1"
 GROK_DEFAULT_MODEL = "grok-4.3"
 GROK_SUMMARY_TIMEOUT = 30
+GROK_SUMMARY_LABELS = ("TL;DR:", "Why it may matter:", "Best for:")
 MAX_SENT_IDS = 500
 MIN_VOTES_PER_SIDE = 10
 # Set to 0 to disable category quota and let best papers win globally.
@@ -825,14 +826,14 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
             return False, False
         if action == "delete":
-            edit_message_keyboard(token, chat_id, message_id, delete_confirmation_keyboard(key))
+            edit_message_keyboard(token, source_chat_id, message_id, delete_confirmation_keyboard(key))
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Confirm deletion?")
             return False, False
         if action == "cancel_delete":
-            edit_message_keyboard(token, chat_id, message_id, vote_keyboard(key))
+            edit_message_keyboard(token, source_chat_id, message_id, vote_keyboard(key))
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deletion cancelled.")
             return False, False
-        result = delete_message(token, chat_id, message_id)
+        result = delete_message(token, source_chat_id, message_id)
         if result and result.get("ok"):
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deleted.")
         else:
@@ -1066,6 +1067,25 @@ def escape_markdown(text):
     return text
 
 
+def format_grok_summary(text):
+    """Bold the section labels (TL;DR, Why it may matter, Best for) for Telegram Markdown."""
+    lines = []
+    for line in text.strip().splitlines():
+        stripped = line.lstrip()
+        leading = line[: len(line) - len(stripped)]
+        matched = None
+        for label in GROK_SUMMARY_LABELS:
+            if stripped.startswith(label):
+                matched = label
+                break
+        if matched is None:
+            lines.append(escape_markdown(line))
+            continue
+        rest = stripped[len(matched):]
+        lines.append(f"{leading}*{escape_markdown(matched)}*{escape_markdown(rest)}")
+    return "\n".join(lines)
+
+
 def format_paper(paper, index, grok_summary=None):
     title = escape_markdown(latex_to_unicode(paper.title.strip().replace("\n", " ")))
     names = [a.name for a in paper.authors]
@@ -1074,21 +1094,22 @@ def format_paper(paper, index, grok_summary=None):
     else:
         authors = f"{names[0]}, {names[1]}, …, {names[-1]}"
     authors = escape_markdown(latex_to_unicode(authors))
-    abstract = latex_to_unicode(paper.summary.strip().replace("\n", " "))
-    escaped_abstract = escape_markdown(abstract)
     categories = " ".join(f"\\[{c}]" for c in paper.categories)
     prefix = (
         f"*[{index}] {title}*\n"
         f"_{authors}_\n"
         f"{categories}\n\n"
     )
-    if grok_summary:
-        prefix += f"*Grok summary*\n{escape_markdown(grok_summary.strip())}\n\n"
     suffix = f"\n\n[arXiv:{paper.get_short_id()}]({paper.entry_id})"
+    if grok_summary:
+        body = f"*Grok summary*\n{format_grok_summary(grok_summary)}"
+    else:
+        abstract = latex_to_unicode(paper.summary.strip().replace("\n", " "))
+        body = escape_markdown(abstract)
     available = max(TELEGRAM_SAFE_MESSAGE_CHARS - len(prefix) - len(suffix), 0)
-    if len(escaped_abstract) > available:
-        escaped_abstract = escaped_abstract[:available].rsplit(" ", 1)[0] + "…"
-    return f"{prefix}{escaped_abstract}{suffix}"
+    if len(body) > available:
+        body = body[:available].rsplit(" ", 1)[0] + "…"
+    return f"{prefix}{body}{suffix}"
 
 
 def vote_keyboard(key):
