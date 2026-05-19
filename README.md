@@ -9,20 +9,15 @@ Checks configured arXiv categories once per day and sends a Markdown-formatted m
 ```
 Telegram ── webhook ──► Cloudflare Worker
                               │
-                              ├─ instant (D1 + Telegram): 👍/👎, Read, Delete,
-                              │                            /stats, /help, /clear prompt
+                              ├─ instant: 👍/👎, Read, Delete,
+                              │           /stats, /help, /clear, /reset
+                              │           (D1 + Telegram; config.json via GitHub API)
                               │
-                              └─ repository_dispatch ──► process_update.yml
-                                    └─ python main.py --apply-update
-                                       (/digest, /reset, confirmed /clear)
-
-GitHub Actions cron ──► daily_papers.yml ── arXiv RSS → preference filter → Telegram
-GitHub Actions cron ──► weekly_digest.yml ── reading-log digest → Telegram
+GitHub Actions cron ──► daily_papers.yml ── arXiv RSS → filter → Telegram
+GitHub Actions cron ──► weekly_digest.yml ── python main.py --weekly-digest
 ```
 
-The Worker (`worker/`) is the **only** Telegram update consumer. A webhook must be configured (see below); `getUpdates` polling was removed from `main.py`.
-
-For a deeper walkthrough, see [`docs/architecture.md`](docs/architecture.md).
+The Worker (`worker/`) is the **only** Telegram update consumer. GitHub Actions only runs the batch brain (daily fetch and Sunday digest). Setup: [`worker/README.md`](worker/README.md). Deeper detail: [`docs/architecture.md`](docs/architecture.md).
 
 ## Setup
 
@@ -75,15 +70,16 @@ Once a webhook is set, Telegram delivers updates only to the Worker (not `getUpd
 
 ## Customising via Telegram
 
-Voting and triage use the inline buttons under each paper alert (see *Reading habit loop* below). `/stats`, `/help`, `/clear`, votes, Read, and Delete are answered instantly by the Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions via `process_update.yml`.
+Voting and triage use the inline buttons under each paper alert (see *Reading habit loop* below). All owner commands are answered by the Worker.
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
-| `/reset`               | Restore default categories         |
+| `/reset`               | Restore default categories (`config.json` via GitHub API) |
 | `/clear`               | Wipe all D1 state and reset categories (confirmation required) |
-| `/digest`              | Send a weekly-style reading digest immediately |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
+
+The **weekly reading digest** is sent automatically on Sunday (`weekly_digest.yml`); there is no on-demand `/digest` command.
 
 ## Preference filter
 
@@ -102,9 +98,8 @@ Each paper alert carries four inline buttons:
 - **👍 Like** / **👎 Dislike** — Cloudflare Worker upserts the vote into the D1 `votes` table instantly (sub-second toast).
 - **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in the D1 `reading_log` table. Add the bot to that group first and set `LITFEED_TO_READ_CHAT_ID` to that group's numeric chat ID.
 - **Delete** — asks for confirmation, then removes the Telegram message.
-- `/digest` sends a weekly-style digest with saved counts, recurring topics, an unread queue, and one deep-read pick.
 
-The `Weekly Reading Digest` workflow runs once per week and calls `python main.py --weekly-digest`.
+The `Weekly Reading Digest` workflow runs once per week and calls `python main.py --weekly-digest` (saved counts, themes, unread queue, deep-read pick).
 
 ## Grok summaries
 
@@ -115,8 +110,8 @@ Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ign
 ## Customising via code
 
 Edit `main.py` defaults or tune knobs:
-- `DEFAULT_CATEGORIES` — applied on `/reset` and when `config.json` is missing.
-- `LOOKBACK_HOURS` — fetch window (default 26h, matches once-daily cron with drift margin).
+- `shared/default_categories.json` — category list applied on `/reset` and `/clear`.
+- `LOOKBACK_HOURS` — fetch window (default 36h).
 - `TELEGRAM_SAFE_MESSAGE_CHARS` — safety cap for paper messages; abstracts are otherwise shown in full.
 - `GROK_DEFAULT_MODEL` — default xAI model for paper summaries.
 - `MIN_VOTES_PER_SIDE` — votes needed per side before the filter activates (default 10).

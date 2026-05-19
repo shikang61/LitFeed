@@ -5,10 +5,8 @@ preference filter (cold-start sends the freshest), and alerts on survivors with
 inline 👍/👎/Read/Delete buttons.
 
 Telegram commands and button callbacks are handled by the Cloudflare Worker
-(``worker/index.js``). GitHub Actions runs ``python main.py --apply-update`` for
-/digest, /reset, and confirmed /clear only (Worker → repository_dispatch).
-
-Weekly digest: ``python main.py --weekly-digest``.
+(``worker/index.js``). GitHub Actions only runs the batch brain:
+``python main.py`` (daily) and ``python main.py --weekly-digest`` (Sunday cron).
 """
 
 import argparse
@@ -34,36 +32,17 @@ _LATEX2TEXT = None
 def latex_to_unicode(text):
     global _LATEX2TEXT
     if _LATEX2TEXT is None:
-        from pylatexenc.latex2text import LatexNodes2Text  # lazy; not needed in --commands-only mode
+        from pylatexenc.latex2text import LatexNodes2Text  # lazy; daily run only
         _LATEX2TEXT = LatexNodes2Text(keep_comments=False, math_mode="text")
     try:
         return _LATEX2TEXT.latex_to_text(text)
     except Exception:
         return text
 
-DEFAULT_CATEGORIES = [
-    "cs.LG",
-    "cs.MA",
-    "econ.EM",
-    "econ.TH",
-    "math.NA",
-    "math.OC",
-    "math-ph",
-    "nlin.SI",
-    "physics.comp-ph",
-    "physics.data-an",
-    "physics.flu-dyn",
-    "physics.plasm-ph",
-    "physics.soc-ph",
-    "q-fin.CP",
-    "q-fin.MF",
-    "q-fin.PM",
-    "q-fin.PR",
-    "q-fin.RM",
-    "q-fin.ST",
-    "q-fin.TR",
-    "stat.ML"
-]
+with (Path(__file__).resolve().parent / "shared" / "default_categories.json").open(
+    encoding="utf-8"
+) as _default_categories_file:
+    DEFAULT_CATEGORIES = json.load(_default_categories_file)
 
 LOOKBACK_HOURS = 36
 ARXIV_RSS_URL = "https://rss.arxiv.org/rss/{category}"
@@ -119,12 +98,10 @@ with (Path(__file__).resolve().parent / "shared" / "topic_keywords.json").open(
 #
 # All persistence lives in Cloudflare D1 via ``state_store`` (see
 # ``state_store.py`` and ``docs/architecture.md``). Per-row mutations
-# (votes, reading_log entries, last_update_id) are written in real time
-# through the narrow mutators (record_vote, upsert_paper_log,
-# set_last_update_id, …); ``save_config`` / ``save_votes`` flush
-# wholesale-replaced state (last_batch table, sent_ids ring buffer).
-# The only file the app writes is ``config.json``, and only when
-# ``categories`` changes (i.e. on /reset).
+# Per-row mutations go through narrow mutators (record_vote, upsert_paper_log,
+# …). ``save_config`` / ``save_votes`` flush wholesale-replaced state.
+# ``config.json`` holds categories; /reset and confirmed /clear update it via
+# the Worker's GitHub Contents API (not from Python).
 
 state_store.set_default_categories(DEFAULT_CATEGORIES)
 
@@ -240,18 +217,6 @@ def send_message(token, chat_id, text, markdown=True, reply_markup=None):
     return None
 
 
-def edit_message_text(token, chat_id, message_id, text, reply_markup=None):
-    params = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "Markdown",
-    }
-    if reply_markup is not None:
-        params["reply_markup"] = json.dumps(reply_markup)
-    return telegram_call(token, "editMessageText", **params)
-
-
 def grok_summarize_paper(paper):
     api_key = os.environ.get("GROK_API_KEY") or os.environ.get("XAI_API_KEY")
     if not api_key:
@@ -307,54 +272,6 @@ def grok_summarize_paper(paper):
     except (KeyError, IndexError, requests.RequestException, ValueError) as e:
         print(f"[grok] summarization failed for {paper_key(paper)}: {e}", file=sys.stderr)
         return None
-
-
-# ---------- commands ----------
-
-CLEAR_DONE_TEXT = (
-    "*LitFeed cleared*\n\n"
-    "Removed all votes, reading history, sent-paper dedup, "
-    "last batch, and category preferences. Categories reset to defaults.\n\n"
-    "_Next daily run starts cold (filter off until you vote again)._"
-)
-
-
-def _execute_clear(cfg, votes, reading_log):
-    """Wipe D1 + in-memory state and reset categories to defaults."""
-    state_store.clear_all_state()
-    cfg["categories"] = list(DEFAULT_CATEGORIES)
-    cfg["sent_ids"] = []
-    votes["liked"].clear()
-    votes["disliked"].clear()
-    votes["last_batch"].clear()
-    reading_log.setdefault("papers", {}).clear()
-
-
-def handle_command(text, cfg, votes, reading_log):
-    """Mutate cfg in place. Return (cfg_changed, reply, reply_markup).
-
-    Only /digest and /reset reach GitHub Actions (via Worker dispatch).
-    /stats, /help, /clear, votes, Read, and Delete are handled in worker/index.js.
-    """
-    parts = text.strip().split(maxsplit=1)
-    cmd = parts[0].lower()
-
-    if cmd == "/digest":
-        return False, format_weekly_digest(votes, reading_log), None
-
-    if cmd == "/reset":
-        cfg["categories"] = list(DEFAULT_CATEGORIES)
-        return True, "Config reset to defaults.", None
-
-    return False, None, None
-
-
-def reading_status_counts(reading_log):
-    counts = {}
-    for entry in reading_log.get("papers", {}).values():
-        status = entry.get("status", "sent")
-        counts[status] = counts.get(status, 0) + 1
-    return counts
 
 
 def infer_topics(text):
@@ -459,64 +376,6 @@ def normalized_category_bonus(category_prefs, category):
     return CATEGORY_PREF_ALPHA * (raw / span)
 
 
-def handle_clear_confirm_callback(token, chat_id, callback, votes, reading_log, cfg):
-    """Wipe D1 after the owner confirms /clear in the Worker UI.
-
-    The Worker already answered the callback with a \"Clearing…\" toast; we only
-    mutate state and edit the confirmation message here.
-    Returns ``(votes_changed, reading_changed, cfg_changed)``."""
-    parts = callback.get("data", "").split(":", 2)
-    if len(parts) != 3 or parts[0] != "h" or parts[1] != "confirm_clear":
-        return False, False, False
-
-    message = callback.get("message") or {}
-    message_id = message.get("message_id")
-    source_chat_id = message.get("chat", {}).get("id") or chat_id
-    if not message_id:
-        return False, False, False
-
-    _execute_clear(cfg, votes, reading_log)
-    edit_message_text(
-        token,
-        source_chat_id,
-        message_id,
-        CLEAR_DONE_TEXT,
-        reply_markup={"inline_keyboard": []},
-    )
-    return False, False, True
-
-
-def apply_webhook_update(token, chat_id, update, cfg, votes, reading_log):
-    """Process a single update dispatched by the Cloudflare Worker → GitHub Actions."""
-    try:
-        owner_id = int(chat_id)
-    except (TypeError, ValueError):
-        print("CHAT_ID is not an integer; skipping webhook update.", file=sys.stderr)
-        return False, False, False
-
-    cfg["last_update_id"] = max(cfg.get("last_update_id", 0), update.get("update_id", 0))
-
-    cb = update.get("callback_query")
-    if cb:
-        if cb.get("from", {}).get("id") != owner_id:
-            return False, False, False
-        vote_mutated, reading_mutated, cfg_mutated = handle_clear_confirm_callback(
-            token, chat_id, cb, votes, reading_log, cfg,
-        )
-        return cfg_mutated, vote_mutated, reading_mutated
-
-    msg = update.get("message") or update.get("edited_message")
-    if not msg or msg.get("from", {}).get("id") != owner_id:
-        return False, False, False
-    text = msg.get("text", "")
-    if not text.startswith("/"):
-        return False, False, False
-    mutated, reply, reply_markup = handle_command(text, cfg, votes, reading_log)
-    if reply:
-        send_message(token, chat_id, reply, reply_markup=reply_markup)
-    return mutated, False, False
-
-
 # ---------- arxiv ----------
 
 _Author = namedtuple("_Author", ["name"])
@@ -609,7 +468,7 @@ def fetch_recent_papers(categories, hours):
     """
     if not categories:
         return []
-    import feedparser  # lazy import; not needed in --commands-only mode
+    import feedparser  # lazy import; daily run only
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     recent = []
@@ -1061,22 +920,9 @@ def summary_for_paper(paper, reading_log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--commands-only",
-        action="store_true",
-        help="No-op (legacy flag). Telegram is handled by the Cloudflare Worker webhook.",
-    )
-    parser.add_argument(
         "--weekly-digest",
         action="store_true",
         help="Send the reading digest and skip arXiv fetch.",
-    )
-    parser.add_argument(
-        "--apply-update",
-        action="store_true",
-        help=(
-            "Process a single Telegram update from LITFEED_UPDATE_JSON "
-            "(Worker → repository_dispatch): /digest, /reset, or /clear confirm."
-        ),
     )
     args = parser.parse_args()
 
@@ -1089,36 +935,6 @@ def main():
     cfg = load_config()
     votes = load_votes()
     reading_log = load_reading_log()
-
-    if args.apply_update:
-        raw = os.environ.get("LITFEED_UPDATE_JSON", "").strip()
-        if not raw:
-            print("LITFEED_UPDATE_JSON is empty; nothing to apply.", file=sys.stderr)
-            return
-        try:
-            update = json.loads(raw)
-        except json.JSONDecodeError as e:
-            print(f"LITFEED_UPDATE_JSON is not valid JSON: {e}", file=sys.stderr)
-            sys.exit(1)
-        cfg_changed, votes_changed, reading_changed = apply_webhook_update(
-            token, chat_id, update, cfg, votes, reading_log,
-        )
-        save_config(cfg)  # last_update_id advances
-        if votes_changed:
-            save_votes(votes)
-        print(
-            f"Applied webhook update {update.get('update_id')}: "
-            f"cfg={cfg_changed} votes={votes_changed} reading={reading_changed}"
-        )
-        return
-
-    if args.commands_only:
-        print(
-            "--commands-only is a no-op: Telegram updates are handled by the "
-            "Cloudflare Worker webhook (see worker/index.js).",
-            file=sys.stderr,
-        )
-        return
 
     if args.weekly_digest:
         send_message(token, chat_id, format_weekly_digest(votes, reading_log))

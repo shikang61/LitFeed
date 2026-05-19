@@ -104,7 +104,7 @@ fresh papers (RSS feed minus dedup minus older than 36h)
     │     sort by freshness, score=NaN for each → header shows "-"
     │
     └─ WARM
-          build_model(votes)            # TF-IDF, recency-weighted
+          build_profile(votes, reading_log)  # TF-IDF + embeddings, recency-weighted
           score each paper              # cos − cos
           sort by (score desc, published desc)
           apply_diversity_guardrail     # Jaccard ≤ 0.85
@@ -265,55 +265,28 @@ Implemented in `recommender.fit_profile` / `score_profile` and `main.py`:
 | Negative serendipity | `THEME_WEEKLY_CAP` (= `MAX_PAPERS_PER_RUN × RUNS_PER_DAY`, default 30) per theme over 7 days. |
 | Vote cap | Oldest votes dropped beyond `MAX_VOTES_PER_SIDE` (250) per bucket. |
 
-## 8. If you want to improve it
+## 8. Future tuning ideas
 
-Concrete directions, ordered by effort:
+Not shipped yet (see §7 for what runs in production today):
 
-1. **Better text representation.** TF-IDF treats "fusion reactor" and
-   "tokamak" as unrelated. Sentence/abstract embeddings (e.g.
-   `sentence-transformers/all-MiniLM-L6-v2`, ~80MB) would capture
-   semantic similarity. Drop-in replacement: change `fit` to embed each
-   abstract, mean-pool to a centroid, and `score` to cosine-similarity
-   the embeddings. Costs: an extra ~200MB Docker/Actions image, ~1s per
-   paper at run-time on CPU.
-
-2. **Per-category models.** Right now one centroid covers everything you
-   like across CS, physics, finance. A vote for an ML paper drags the
-   plasma-physics relevance up. Split the corpus by primary_category
-   and score each paper against the model for its own category.
-
-3. **Use the Read signal.** Right now Read updates `reading_log.status`
-   but doesn't feed the recommender. A "Read" tap is a stronger signal
-   than a 👍 — promote it to a synthetic like with weight ≈ 1.5 in the
-   centroid sum.
-
-4. **Position-debias the score.** Papers near the top of the batch get
-   disproportionately voted on. The recommender currently treats all
-   votes equally; you could down-weight votes from papers that were
+1. **Position-debias the score.** Papers near the top of the batch get
+   disproportionately voted on. Down-weight votes from papers that were
    #1–#3 in their batch.
 
-5. **Negative serendipity.** The diversity guardrail prevents
-   near-duplicates within a batch but does nothing about repeated
-   *themes* across batches. Consider a "you've already seen N papers
-   about reconnection this week" guardrail before sending.
+2. **Active learning / abstention.** When `|score|` is near zero, prioritize
+   that paper in the serendipity slot even when it doesn't beat the floor.
 
-6. **Active learning / abstention.** When a paper's `|score|` is near
-   zero (the model is unsure), prioritize it in the serendipity slot
-   even when it doesn't beat the floor. You'd train faster on the
-   ambiguous cases.
+3. **Calibration.** Platt-scaling (score → P(like)) would make the header
+   score interpretable as a probability threshold instead of a raw margin.
 
-7. **Calibration.** The raw score is fine for ranking but not
-   interpretable. A platt-scaling pass on (score → P(like)) would let
-   you set a probability threshold (e.g. send anything with P(like) ≥
-   0.6) instead of `floor=0`.
+4. **Score explain line.** Revive `recommender.explain` in the Telegram
+   header or `/stats` so you can see which n-grams drove the rank.
 
-8. **Multiple recommenders, blend.** Keep TF-IDF as a fast baseline,
-   bolt on embeddings as a secondary, and blend their scores. If
-   they disagree strongly, that's the most interesting paper of the day.
+5. **Grok summary cache.** Hash abstracts in D1 and skip repeat API calls
+   when the same paper is re-sent after a version bump.
 
-For any of these, the cleanest entry point is `recommender.py::fit` /
-`score` — keep the interface, swap the implementation, and the selection
-pipeline doesn't need to know anything changed.
+The cleanest hooks are `recommender.fit_profile` / `score_profile` and the
+selection helpers in `main.py` — swap scoring without touching the pipeline.
 
 ## 9. Debugging
 
@@ -325,9 +298,12 @@ votes = state_store.load_votes()
 print(f"liked={len(votes[\"liked\"])} disliked={len(votes[\"disliked\"])}")
 print(f"active={main.filter_active(votes)} floor={main.current_relevance_floor(votes)}")
 if main.filter_active(votes):
-    model = main.build_model(votes)
-    # score a synthetic paper
-    s = recommender.score("magnetic reconnection in tokamak plasmas", model)
+    log = state_store.load_reading_log()
+    profile = main.build_profile(votes, log)
+    prefs = state_store.load_category_preferences()
+    s = main.score_text_with_profile(
+        "magnetic reconnection in tokamak plasmas", [], profile, prefs
+    )
     print(f"score(reconnection paper) = {s:+.3f}")
 '
 

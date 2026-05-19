@@ -4,7 +4,8 @@
 # Since the D1 cutover (Phase F), the only file the bot ever rewrites is
 # config.json, and only when /reset (or another category-mutation command)
 # fires. Two concurrent workflow runs touching config.json is extremely
-# unlikely — the concurrency group on `telegram-poll` already serializes
+# Legacy helper if something still commits config.json from Actions.
+# Normal /reset and /clear updates go through the Worker (GitHub Contents API).
 # them — but on the off chance we lose the race, we rebase against origin
 # and try again. There's no semantic merge step anymore: config.json only
 # carries a small ``categories`` array, and the latest write always wins.

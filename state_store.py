@@ -1,7 +1,7 @@
 """LitFeed state store: Cloudflare D1 backend.
 
 All runtime state lives in Cloudflare D1 (SQLite at the edge) — votes,
-reading_log, sent_ids, last_batch, and the Telegram offset (`kv`). The only
+reading_log, sent_ids, last_batch, and small `kv` scalars. The only
 thing left in the repo is `config.json`, which holds the user-editable
 ``categories`` list and nothing else.
 
@@ -155,7 +155,7 @@ def load_reading_log() -> dict[str, Any]:
                 entry["grok_summary"] = json.loads(r["grok_summary"])
             except (TypeError, ValueError):
                 pass
-        # Legacy schema carried a ``notes`` list; default to empty so /digest's
+        # Legacy schema carried a ``notes`` list; default to empty for weekly
         # expectations hold.
         entry.setdefault("notes", [])
         papers[r["paper_key"]] = entry
@@ -342,6 +342,11 @@ def append_sent_ids(keys: list[str], sent_ts: str) -> None:
 
 
 def set_last_update_id(n: int) -> None:
+    """Legacy Telegram ``getUpdates`` offset (``kv.last_update_id``).
+
+    The Worker webhook does not poll Telegram; nothing updates this in normal
+    operation. Kept for migration scripts and ``load_config`` compatibility.
+    """
     _d1.query(
         "INSERT INTO kv (key, value) VALUES ('last_update_id', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

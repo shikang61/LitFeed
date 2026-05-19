@@ -1,12 +1,10 @@
 # LitFeed Cloudflare Worker
 
 A Telegram webhook receiver — the **only** update consumer for LitFeed in
-production. Handles instant button taps and lightweight commands at the edge;
-dispatches heavier work to GitHub Actions.
+production. Handles all button taps and owner commands at the edge. GitHub
+Actions only runs the daily arXiv batch and the Sunday weekly digest.
 
-For an end-to-end walkthrough of how this Worker plugs into GitHub Actions and
-why the request flow is split into instant vs. dispatched paths, see
-[`../docs/architecture.md`](../docs/architecture.md).
+For an end-to-end walkthrough, see [`../docs/architecture.md`](../docs/architecture.md).
 
 ## What this Worker does
 
@@ -15,14 +13,15 @@ under a second:
 
 | Action                | Where it runs                                                    |
 | --------------------- | ---------------------------------------------------------------- |
-| **👍 / 👎 buttons**   | Worker answers the callback with a toast, then upserts the vote into the D1 `votes` table directly (no GitHub round-trip). |
-| **Read** button       | Worker forwards the message to your "To Read" group, then upserts `status='saved'` into the D1 `reading_log` table directly. |
-| **Delete** button     | Worker swaps the keyboard to confirm/cancel — no GitHub round-trip. |
-| **Confirm delete**    | Worker calls `deleteMessage` on the Telegram API directly. |
-| **Cancel**            | Worker restores the vote/Read/Delete keyboard. |
-| `/stats`, `/help` | Worker reads D1 and replies instantly (no GitHub run). |
-| `/digest` | Worker sends “Generating digest…”, then dispatches; `main.py --apply-update` builds the digest from D1. |
-| `/reset`, `/clear` | Worker dispatches; `process_update.yml` runs `main.py` and may commit `config.json`. |
+| **👍 / 👎 buttons**   | Worker toast + D1 `votes` upsert. |
+| **Read** button       | Forward to To Read group + D1 `reading_log.status='saved'`. |
+| **Delete** button     | Confirm/cancel keyboard + `deleteMessage`. |
+| `/stats`, `/help`     | D1 reads + `sendMessage`. |
+| `/clear`              | Confirmation UI; confirm wipes D1 and resets categories. |
+| `/reset`              | Resets `config.json` via GitHub Contents API. |
+
+There is no `/digest` command — the weekly digest is sent by `weekly_digest.yml`
+only.
 
 ## One-time setup
 
@@ -40,21 +39,19 @@ The first `wrangler deploy` prints a URL like
 
 ### 2. Create a GitHub PAT for the Worker
 
-The Worker needs to fire `repository_dispatch` events on your repo. Create a
+`/reset` and confirmed `/clear` update `config.json` in the repo via the
+[Contents API](https://docs.github.com/en/rest/repos/contents). Create a
 **fine-grained personal access token** at
 <https://github.com/settings/tokens?type=beta>:
 
-- Resource owner: yourself.
 - Repository access: only this repo.
 - Repository permissions: **Contents → Read and write**.
 
-Copy the token. (A classic PAT with the `repo` scope also works, but the
-fine-grained one is tighter.)
+(A classic PAT with the `repo` scope also works.)
 
 ### 3. Set Worker secrets
 
-Pick a long random string for `WEBHOOK_SECRET` (it authenticates Telegram → your
-Worker; nobody else needs to know it). Then:
+Pick a long random string for `WEBHOOK_SECRET` (Telegram → Worker auth). Then:
 
 ```bash
 cd worker
@@ -67,9 +64,6 @@ wrangler secret put WEBHOOK_SECRET          # the random string
 ```
 
 ### 4. Tell Telegram about the webhook
-
-Telegram only sends to one consumer at a time — webhook **or** `getUpdates`,
-not both. Point Telegram at the Worker:
 
 ```bash
 WORKER_URL="https://litfeed-bot.<your-subdomain>.workers.dev"
@@ -88,10 +82,9 @@ Verify:
 curl -fsS "https://api.telegram.org/bot${TELEGRAM_TOKEN}/getWebhookInfo"
 ```
 
-You should see your Worker URL in `result.url` and `pending_update_count: 0`.
-
 Topic labels for `/stats` come from `shared/topic_keywords.json` (same file
-the weekly digest uses in Python).
+the weekly digest uses in Python). Default categories for `/reset` live in
+`shared/default_categories.json`.
 
 ## Tearing the Worker down
 
@@ -99,8 +92,7 @@ the weekly digest uses in Python).
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook"
 ```
 
-Telegram commands and buttons will stop working until you set a webhook again.
-There is no `getUpdates` fallback in `main.py`.
+Telegram commands and buttons stop working until you set a webhook again.
 
 ## Local development
 
@@ -125,5 +117,5 @@ reach your laptop.
 
 ## Cost
 
-Cloudflare Workers free tier: 100,000 requests/day and 10ms CPU/request. A
-personal LitFeed bot uses well under 0.1% of that.
+Cloudflare Workers free tier: 100,000 requests/day. A personal LitFeed bot uses
+well under 0.1% of that.

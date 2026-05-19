@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: telegram-poll
+  group: litfeed-runs
   cancel-in-progress: false
 
 jobs:

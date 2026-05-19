@@ -20,10 +20,10 @@ to Telegram with vote buttons. It runs unattended on GitHub Actions.
 
 ## How It Works
 
-A daily run (`python main.py`) fetches, filters, and alerts. Telegram commands
-and button callbacks are handled by the Cloudflare Worker; `main.py
---apply-update` handles Worker-dispatched updates only (`/digest`, `/reset`,
-confirmed `/clear`).
+A daily run (`python main.py`) fetches, filters, and alerts. All Telegram
+commands and button callbacks are handled by the Cloudflare Worker
+(`worker/index.js`). GitHub Actions only runs `python main.py` (daily) and
+`python main.py --weekly-digest` (Sunday cron).
 
 **Fetch, filter, alert** (skipped under `--weekly-digest`):
    * Fetch papers from each category's RSS feed at
@@ -38,7 +38,7 @@ confirmed `/clear`).
     by relevance then freshness, apply a diversity guardrail, and keep papers
     above a dynamic relevance floor. Otherwise (cold start), send freshest
     papers with the same diversity guardrail.
-   * Cap to `MAX_PAPERS_PER_RUN` (5) total papers per run. Category capping can
+   * Cap to `MAX_PAPERS_PER_RUN` (10) total papers per run. Category capping can
      be disabled so the best papers win globally.
    * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
      D1 (`sent_ids` + `reading_log` + `last_batch`).
@@ -49,7 +49,7 @@ confirmed `/clear`).
 stop words, sublinear TF) and recency-weighted liked/disliked centroids
 (45-day half-life). `score(text, model)` returns
 `cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is
-imported lazily so `--commands-only` runs don't need it.
+imported lazily so a minimal import of `recommender` does not require sklearn.
 
 The full algorithm (cold-start gate, relevance floor, diversity guardrail,
 serendipity slot, priority mix, weekly-digest deep-read pick, tunable
@@ -59,10 +59,9 @@ changing scoring behavior.
 
 ## Telegram Commands (owner only)
 
-`/reset`, `/digest`, `/clear`, `/stats`, `/help`. Non-owner senders are ignored.
-`/stats`, `/help`, `/clear` (prompt), votes, Read, and Delete are handled in
-the Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions
-via `main.py --apply-update`.
+`/reset`, `/clear`, `/stats`, `/help`. Non-owner senders are ignored. All of
+these (plus votes, Read, Delete) are handled in the Worker. Weekly digest is
+scheduled only (`weekly_digest.yml`); there is no `/digest` command.
 
 Voting and triage are button-only. Each paper alert carries an inline keyboard
 with 👍 Like / 👎 Dislike (`v:like:<key>` / `v:dislike:<key>` callbacks),
@@ -95,13 +94,13 @@ D1 tables (see `migrations/0001_init.sql`):
 * `last_batch(position PK, paper_key, text, score)` — wholly replaced each
  daily run; used by Worker vote callbacks to look up text when a paper
  hasn't been written to `reading_log` yet.
-* `kv(key PK, value)` — small scalars (currently just `last_update_id`).
+* `kv(key PK, value)` — small scalars (`category_preferences`, legacy
+  `last_update_id` from the old getUpdates poll).
 
 `config.json` keeps **only** the user-edited `categories` list, version-
-controlled in git. `DEFAULT_CATEGORIES` in `main.py` is the seed list
-(CS / math / physics / q-fin / stats — reflecting interests in
-computational physics, plasma/fusion, and quantitative finance). The live
-set is whatever is in `config.json`.
+controlled in git. `shared/default_categories.json` is the seed list for
+`/reset` and `/clear`. The Worker updates `config.json` via the GitHub
+Contents API; daily runs read whatever is checked out in the repo.
 
 ### Local dev
 
@@ -116,36 +115,22 @@ escape hatches were retired in Phase F.
 * `daily_papers.yml` — full run. Triggered by `repository_dispatch`
  (`run-paper-alerter`, fired by cron-job.org) and `workflow_dispatch`.
  Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
-* `process_update.yml` — triggered by `repository_dispatch` event type
- `telegram-update`, fired by the Cloudflare Worker (`worker/index.js`) for
- `/digest`, `/reset`, and confirmed `/clear` (the Worker handles votes, Read,
- Delete, `/stats`, `/help`, and the `/clear` prompt directly). Runs
- `python main.py --apply-update` with the update in `LITFEED_UPDATE_JSON`.
 * `weekly_digest.yml` — Sunday 18:00 UTC, `python main.py --weekly-digest`.
 
-`daily_papers.yml` and `weekly_digest.yml` are pure read+D1-write
-workflows now — they don't commit anything back to the repo.
-`process_update.yml` still uses `scripts/safe_state_push.sh` to commit
-`config.json` whenever a command (today, only `/reset`) rewrites
-categories. All three share a `telegram-poll` concurrency group so they
-never push concurrently. `sync.sh` is a local helper to rebase-and-push
-around those bot commits.
+`daily_papers.yml` and `weekly_digest.yml` are pure read+D1-write workflows;
+they do not commit back to the repo. Both share a `litfeed-runs` concurrency
+group so they never run D1 writes concurrently.
 
 ## Cloudflare Worker (for instant button reactions)
 
-`worker/index.js` is the Telegram webhook receiver. It splits work two ways:
-
-* **Direct D1 writes (no GitHub):** `v:like` / `v:dislike` upsert into the
- `votes` table; `h:read_to_group` upserts `reading_log.status='saved'`.
- The Worker has a D1 binding (`env.DB`, declared in `worker/wrangler.toml`)
- and runs the upserts in single-digit ms.
-* **GitHub dispatch:** `/digest`, `/reset`, and `h:confirm_clear` fire
- `repository_dispatch` so `process_update.yml` runs
- `python main.py --apply-update`. `/stats` and `/help` are answered in the
- Worker (D1 reads + `sendMessage`).
+`worker/index.js` is the Telegram webhook receiver. It handles all owner
+traffic: `v:like` / `v:dislike` and `h:read_to_group` write D1 directly;
+`/stats`, `/help`, `/clear`, `/reset`, and `h:confirm_clear` run in the
+Worker. `/reset` and confirmed `/clear` also commit `config.json` via the
+GitHub Contents API (`GITHUB_REPO` + `GITHUB_PAT`).
 
 `h:delete` / `h:confirm_delete` / `h:cancel_delete` are Telegram-only
-(keyboard swap, deleteMessage) and never touch D1 or GitHub.
+(keyboard swap, deleteMessage) and never touch D1.
 
 Telegram only allows one update consumer at a time. Production uses the Worker
 webhook exclusively (`getUpdates` polling was removed from `main.py`). Setup is

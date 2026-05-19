@@ -1,39 +1,29 @@
 /**
  * LitFeed Cloudflare Worker — Telegram webhook receiver.
  *
- * Telegram delivers each update here. We split work into two paths:
+ * All Telegram traffic is handled here (sub-second toasts, D1 writes, and
+ * owner commands). GitHub Actions only runs the batch brain:
+ *   • daily_papers.yml  → python main.py
+ *   • weekly_digest.yml → python main.py --weekly-digest
  *
- *   1. Instant (handled in this Worker, sub-second toast feedback + direct
- *      D1 writes — no GitHub round-trip):
- *      - v:like / v:dislike → answer callback with toast, then upsert the
- *        vote row in the D1 `votes` table.
- *      - h:read_to_group  → forward the paper message to LITFEED_TO_READ_CHAT_ID
- *        and upsert reading_log.status='saved' in D1.
- *      - h:delete / h:confirm_delete / h:cancel_delete — paper message deletion
- *      - h:cancel_clear — /clear cancelled (edit message)
- *      - /stats, /help, /clear prompt — answered here (D1 reads + sendMessage).
+ * Instant path (no GitHub):
+ *   - v:like / v:dislike → D1 votes
+ *   - h:read_to_group → forward + reading_log.status='saved'
+ *   - h:delete / confirm / cancel — Telegram-only
+ *   - /stats, /help, /clear prompt, /reset
+ *   - h:confirm_clear / h:cancel_clear — D1 wipe + config.json via GitHub API
  *
- *   2. Dispatched to GitHub (repository_dispatch → process_update.yml →
- *      `python main.py --apply-update`):
- *      - /digest — instant ack here, then dispatch; full digest from main.py.
- *      - /reset — category reset (may commit config.json).
- *      - h:confirm_clear — D1 wipe + categories reset in GitHub Actions.
+ * Required Worker secrets (wrangler secret put NAME):
+ *   TELEGRAM_TOKEN, CHAT_ID, LITFEED_TO_READ_CHAT_ID
+ *   GITHUB_REPO — "owner/repo" (for /reset and confirmed /clear)
+ *   GITHUB_PAT  — Contents:write on the repo
+ *   WEBHOOK_SECRET — setWebhook secret_token
  *
- * Required Worker secrets (set via `wrangler secret put NAME`):
- *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
- *   CHAT_ID               — owner's numeric chat id (only this user is honoured)
- *   LITFEED_TO_READ_CHAT_ID — destination group for the Read button
- *   GITHUB_REPO           — "owner/repo", e.g. "shikang61/LitFeed"
- *   GITHUB_PAT            — fine-grained PAT with Contents:write on the repo,
- *                           or a classic PAT with the `repo` scope
- *   WEBHOOK_SECRET        — random string passed to setWebhook?secret_token=…;
- *                           Telegram echoes it back in X-Telegram-Bot-Api-Secret-Token
- *
- * Required D1 binding (declared in wrangler.toml):
- *   DB → litfeed_state database
+ * D1 binding: DB → litfeed_state (wrangler.toml)
  */
 
 import TOPIC_KEYWORDS from "../shared/topic_keywords.json";
+import DEFAULT_CATEGORIES from "../shared/default_categories.json";
 
 const TG_API = "https://api.telegram.org";
 const MIN_VOTES_PER_SIDE = 10;
@@ -45,6 +35,12 @@ const CLEAR_CONFIRM_TEXT =
   "sent-paper dedup entry, category preferences, and the last daily batch. " +
   "Categories will reset to defaults. The recommender goes back to cold start.\n\n" +
   "_This cannot be undone._";
+
+const CLEAR_DONE_TEXT =
+  "*LitFeed cleared*\n\n" +
+  "Removed all votes, reading history, sent-paper dedup, " +
+  "last batch, and category preferences. Categories reset to defaults.\n\n" +
+  "_Next daily run starts cold (filter off until you vote again)._";
 
 function inferTopics(text) {
   const lowered = (text || "").toLowerCase();
@@ -75,6 +71,113 @@ function formatTopicSummary(entries) {
   return topics.map(([topic, count]) => `\`${topic}\` (${count})`).join(", ");
 }
 
+function githubHeaders(env) {
+  return {
+    Authorization: `Bearer ${env.GITHUB_PAT}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "litfeed-worker",
+    "Content-Type": "application/json",
+  };
+}
+
+function utf8ToBase64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+/** Commit categories to config.json via the GitHub Contents API (for CI checkout). */
+async function commitConfigCategories(env, categories) {
+  if (!env.GITHUB_REPO || !env.GITHUB_PAT) {
+    console.error("[github] GITHUB_REPO or GITHUB_PAT missing; cannot update config.json.");
+    return false;
+  }
+  const content = JSON.stringify({ categories }, null, 2) + "\n";
+  const encoded = utf8ToBase64(content);
+  const url = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/config.json`;
+
+  let sha;
+  try {
+    const getResp = await fetch(url, { headers: githubHeaders(env) });
+    if (getResp.ok) {
+      sha = (await getResp.json()).sha;
+    } else if (getResp.status !== 404) {
+      console.error(`[github] GET config.json failed ${getResp.status}`, await getResp.text());
+      return false;
+    }
+  } catch (e) {
+    console.error("[github] GET config.json error", e);
+    return false;
+  }
+
+  const body = {
+    message: "chore: reset categories from Telegram",
+    content: encoded,
+  };
+  if (sha) body.sha = sha;
+
+  try {
+    const putResp = await fetch(url, {
+      method: "PUT",
+      headers: githubHeaders(env),
+      body: JSON.stringify(body),
+    });
+    if (!putResp.ok) {
+      console.error(`[github] PUT config.json failed ${putResp.status}`, await putResp.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("[github] PUT config.json error", e);
+    return false;
+  }
+}
+
+async function clearAllState(env) {
+  if (!env.DB) {
+    console.error("[d1] DB binding missing; cannot clear state.");
+    return false;
+  }
+  const tables = ["votes", "reading_log", "sent_ids", "last_batch", "kv"];
+  try {
+    for (const table of tables) {
+      await env.DB.prepare(`DELETE FROM ${table}`).run();
+    }
+    return true;
+  } catch (e) {
+    console.error("[d1] clearAllState failed", e);
+    return false;
+  }
+}
+
+async function handleReset(env) {
+  const ok = await commitConfigCategories(env, DEFAULT_CATEGORIES);
+  const text = ok
+    ? "Config reset to defaults."
+    : "Could not update config.json — check Worker logs (GITHUB_PAT / GITHUB_REPO).";
+  await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text });
+}
+
+async function handleConfirmClear(env, sourceChatId, messageId) {
+  const cleared = await clearAllState(env);
+  const cfgOk = await commitConfigCategories(env, DEFAULT_CATEGORIES);
+  let text = CLEAR_DONE_TEXT;
+  if (!cleared) {
+    text += "\n\n_(D1 clear failed — check Worker logs.)_";
+  } else if (!cfgOk) {
+    text += "\n\n_(config.json commit failed — daily runs may use stale categories until fixed.)_";
+  }
+  await tg(env, "editMessageText", {
+    chat_id: sourceChatId,
+    message_id: messageId,
+    text,
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: [] },
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") {
@@ -99,7 +202,6 @@ export default {
       update.message?.from?.id ??
       update.edited_message?.from?.id;
     if (!Number.isFinite(ownerId) || senderId !== ownerId) {
-      // Ignore non-owner traffic silently — same posture as main.py.
       return new Response("OK");
     }
 
@@ -116,12 +218,8 @@ export default {
         ctx.waitUntil(handleOwnerCommand(cmd, env));
         return new Response("OK");
       }
-      if (cmd === "/digest") {
-        await tg(env, "sendMessage", {
-          chat_id: env.CHAT_ID,
-          text: "Generating digest…",
-        });
-        ctx.waitUntil(dispatchToGitHub(env, update));
+      if (cmd === "/reset") {
+        ctx.waitUntil(handleReset(env));
         return new Response("OK");
       }
       if (cmd === "/clear") {
@@ -135,8 +233,6 @@ export default {
       }
     }
 
-    // Fall-through: dispatch to GitHub (/reset, unknown commands).
-    ctx.waitUntil(dispatchToGitHub(env, update));
     return new Response("OK");
   },
 };
@@ -150,7 +246,6 @@ async function handleCallback(cb, update, env, ctx) {
   if (kind === "v" && (action === "like" || action === "dislike")) {
     const toast = action === "like" ? "Recorded 👍" : "Recorded 👎";
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: toast });
-    // Write the vote directly to D1; no GitHub round-trip.
     ctx.waitUntil(
       recordVote(env, key, action === "like" ? "liked" : "disliked").then(() =>
         bumpCategoryPrefsFromVote(env, key, action === "like" ? "liked" : "disliked")
@@ -182,7 +277,7 @@ async function handleCallback(cb, update, env, ctx) {
       return true;
     }
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Clearing…" });
-    ctx.waitUntil(dispatchToGitHub(env, update));
+    ctx.waitUntil(handleConfirmClear(env, sourceChatId, messageId));
     return true;
   }
 
@@ -250,14 +345,12 @@ async function handleCallback(cb, update, env, ctx) {
       return true;
     }
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Forwarded to To Read." });
-    // Mark the paper as "saved" in D1; no GitHub round-trip.
     ctx.waitUntil(
       recordReadSaved(env, key).then(() => bumpCategoryPrefsFromRead(env, key))
     );
     return true;
   }
 
-  // Unknown action — let main.py handle (dispatch via fall-through).
   return false;
 }
 
@@ -281,17 +374,6 @@ async function tg(env, method, body) {
   }
 }
 
-/**
- * Upsert a vote into D1. ``bucket`` is "liked" or "disliked".
- *
- * The vote row needs a `text` column for the TF-IDF recommender. The Worker
- * only knows the paper key (callback_data is capped at 64 bytes by Telegram),
- * so we look up the text in this order:
- *   1. reading_log.text (set when the paper was first sent)
- *   2. last_batch.text (set by the most recent daily run)
- * If neither exists (shouldn't happen in steady state), we store the empty
- * string and let main.py backfill at the next save_votes opportunity.
- */
 async function recordVote(env, key, bucket) {
   if (!env.DB) {
     console.error("[d1] DB binding missing; cannot record vote.");
@@ -332,10 +414,6 @@ async function pruneVotes(env, bucket) {
   }
 }
 
-/**
- * Mark a paper as "saved" in the reading_log (Read button → forwarded to
- * the To Read group). Idempotent.
- */
 async function recordReadSaved(env, key) {
   if (!env.DB) {
     console.error("[d1] DB binding missing; cannot record read_to_group.");
@@ -352,35 +430,6 @@ async function recordReadSaved(env, key) {
       .run();
   } catch (e) {
     console.error("[d1] recordReadSaved failed", e);
-  }
-}
-
-async function dispatchToGitHub(env, update) {
-  if (!env.GITHUB_REPO || !env.GITHUB_PAT) {
-    console.error("[github] GITHUB_REPO or GITHUB_PAT missing; cannot dispatch.");
-    return;
-  }
-  const url = `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`;
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.GITHUB_PAT}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "litfeed-worker",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        event_type: "telegram-update",
-        client_payload: { update },
-      }),
-    });
-    if (!resp.ok) {
-      console.error(`[github] dispatch failed ${resp.status}`, await resp.text());
-    }
-  } catch (e) {
-    console.error("[github] dispatch error", e);
   }
 }
 
@@ -436,11 +485,11 @@ async function sendHelp(env) {
     "*Commands*\n" +
     "/reset — restore default categories\n" +
     "/clear — wipe all state (asks for confirmation)\n" +
-    "/digest — send a weekly-style reading digest now\n" +
     "/stats — vote counts + filter status\n" +
     "/help — this message\n\n" +
     "_Vote and triage with the buttons under each paper:_ " +
-    "👍 / 👎 / Read / Delete.";
+    "👍 / 👎 / Read / Delete.\n\n" +
+    "_Weekly reading digest: Sunday cron (GitHub Actions)._";
   await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text, parse_mode: "Markdown" });
 }
 

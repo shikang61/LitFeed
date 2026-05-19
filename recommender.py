@@ -3,8 +3,8 @@
 Train on liked/disliked (title + abstract). Score by blended cosine distance
 to liked vs disliked centroids, with optional per-category models.
 
-sklearn / sentence-transformers are imported lazily so ``--commands-only`` runs
-do not need them installed.
+sklearn / sentence-transformers are imported lazily so a minimal import of
+this module does not require them installed.
 """
 
 from __future__ import annotations

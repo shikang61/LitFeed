@@ -18,25 +18,19 @@ model, selection pipeline, tunable knobs, ideas for improvement) see
                 │                                              │
                 │   • daily_papers.yml  (paper fetch + alert)  │
                 │   • weekly_digest.yml (Sun 18:00 UTC)        │
-                │   • process_update.yml (/commands handler)   │
-                └────────────┬─────────────────────┬───────────┘
-                             │                     │
-                  REST writes│                     │repository_dispatch
-                             │                     │
-                             ▼                     ▼
+                └────────────┬────────────────────────────────┘
+                             │ REST writes
+                             ▼
                      ┌─────────────────┐   ┌──────────────────┐
        arXiv RSS  ──►│                 │   │  cron-job.org    │
                      │  Cloudflare D1  │   │  hits dispatch   │
                      │  (litfeed_state)│   │  to fire daily   │
-                     │                 │   └──────────────────┘
-                     └────────▲────────┘
+                     └────────▲────────┘   └──────────────────┘
                               │  native binding (env.DB)
                               │
                      ┌────────┴────────────────────────────┐
                      │   Cloudflare Worker (index.js)      │
-                     │   Telegram webhook receiver         │
-                     │   • instant: votes, read, delete    │
-                     │   • dispatch: /commands             │
+                     │   Telegram webhook (all commands)   │
                      └────────▲────────────────────────────┘
                               │ HTTPS POST
                               ▼
@@ -49,23 +43,24 @@ model, selection pipeline, tunable knobs, ideas for improvement) see
 ```
 
 Nothing in this picture talks directly to another piece without going via
-either Telegram, GitHub's `repository_dispatch` event, or D1.
+Telegram, D1, or (for `/reset` / `/clear`) the GitHub Contents API from the
+Worker.
 
 ## 2. Where state lives
 
 | State                         | Storage                       | Mutated by                                     |
 |-------------------------------|-------------------------------|------------------------------------------------|
-| `categories`                  | `config.json` (in git)        | `/reset` (rare; rewrites file)                 |
+| `categories`                  | `config.json` (in git)        | Worker `/reset`, `/clear` (GitHub Contents API)  |
+| Category preference lean      | D1 `kv.category_preferences`  | Worker (votes, Read)                             |
 | Liked / disliked papers       | D1 `votes`                    | Worker (`v:like`, `v:dislike`)                 |
 | Reading log (sent + saved)    | D1 `reading_log`              | `main.py` (sends), Worker (`Read` button)      |
 | Sent-id ring buffer (dedup)   | D1 `sent_ids` (capped at 500) | `main.py` daily run                            |
 | Most recent batch (positions) | D1 `last_batch`               | `main.py` daily run (wholesale-replaced)       |
-| Telegram offset               | D1 `kv` row `last_update_id`  | `main.py --apply-update`                       |
+| Telegram offset (legacy)      | D1 `kv` row `last_update_id`  | unused in webhook mode                         |
 
-`config.json` is the **only** thing the app writes back to the repo, and
-only when `/reset` actually changes the category list. Daily runs, votes,
-button taps, the weekly digest, and even most `/commands` produce **zero
-git diff**.
+`config.json` is updated from the Worker (not from GitHub Actions) when
+you `/reset` or confirm `/clear`. Daily runs, votes, button taps, and the
+weekly digest produce **zero git diff** from Actions.
 
 ### 2.1 D1 schema
 
@@ -93,8 +88,8 @@ kv           (key PK, value)
 - **`last_batch`** — positions 1..N for the most recent paper batch. Used
   by Worker callback votes to look up paper text when the paper isn't
   in `reading_log` yet. Wholesale-replaced each daily run.
-- **`kv`** — currently only holds `last_update_id` (Telegram offset, kept
-  for legacy reasons since the webhook is the live consumer).
+- **`kv`** — `category_preferences` (JSON map of arXiv category → lean
+  score) and legacy `last_update_id` from the old `getUpdates` poll.
 
 ### 2.2 How Python talks to D1
 
@@ -218,46 +213,18 @@ write.
 
 Net result: zero GitHub Actions runs, zero git commits, one D1 upsert.
 
-### 3.3 Telegram command  (Telegram → Worker → `process_update.yml` → D1)
+### 3.3 Telegram commands  (Telegram → Worker only)
 
-For things the Worker can't (or won't) do at the edge: `/reset`,
-`/digest`, `/stats`, `/help`. These need the full Python environment
-(multi-line Markdown, sklearn, `config.json` mutation).
+All owner commands are handled in `worker/index.js`:
 
-```
-You send /digest
-        │
-        ▼
-Telegram POSTs the update
-        ▼
-Worker (handleCallback returns false → falls through)
-        │
-        └─ ctx.waitUntil(dispatchToGitHub(env, update))
-              POST https://api.github.com/repos/<owner>/LitFeed/dispatches
-              Body: {event_type:"telegram-update", client_payload:{update}}
-        ▼
-GitHub Actions runs process_update.yml
-        │
-        └─ python main.py --apply-update
-              LITFEED_UPDATE_JSON = <the update payload>
-              │
-              ├─ load_config / load_votes / load_reading_log
-              │   (all from D1 as in §3.1)
-              │
-              ├─ apply_webhook_update(...) → handle_command("/digest", ...)
-              │   builds the digest text from votes + reading_log
-              │   sends it via Telegram
-              │
-              └─ save_config(cfg)
-                  → D1: kv.last_update_id = update_id of this update
-                  → D1: (no sent_ids change for /digest, so the row set is the same)
-                  → config.json: rewritten only if categories changed (i.e. /reset)
-```
+- `/stats`, `/help` — D1 reads + `sendMessage`.
+- `/clear` — confirmation keyboard; confirm wipes D1 and resets categories.
+- `/reset` — commits default categories to `config.json` via the GitHub
+  Contents API (`GITHUB_REPO` + `GITHUB_PAT`).
 
-The `Commit state changes` step at the end runs `safe_state_push.sh`,
-which only touches `config.json` and exits cleanly when there's nothing
-to commit. `/digest` and confirmed `/clear` produce zero commits; `/reset`
-and `/clear` confirm (category reset) may commit `config.json`.
+There is no on-demand `/digest`; the weekly digest is sent only by
+`weekly_digest.yml` (`python main.py --weekly-digest`), which needs Python
+for `build_profile` and `choose_deep_read_candidate`.
 
 ### 3.4 Weekly digest  (Sun 18:00 UTC cron → `weekly_digest.yml` → D1 read)
 
@@ -276,14 +243,14 @@ pure read-and-send.
 
 ## 4. D1 read/write map (one-glance)
 
-| Table         | Daily run               | Vote tap       | Read tap        | `/digest`        | `/reset`         | Weekly |
-|---------------|-------------------------|----------------|-----------------|------------------|------------------|--------|
-| `votes`       | read                    | **upsert row** | —               | read             | —                | read   |
-| `reading_log` | **upsert per paper**    | read for text  | **upsert row**  | read             | —                | read   |
-| `sent_ids`    | **rebuild (capped 500)**| —              | —               | read             | —                | —      |
-| `last_batch`  | **wholesale replace**   | read for text  | —               | —                | —                | —      |
-| `kv`          | **set last_update_id**  | —              | —               | **set**          | **set**          | —      |
-| `config.json` | —                       | —              | —               | —                | **rewrite**      | —      |
+| Table         | Daily run               | Vote tap       | Read tap        | `/reset` / `/clear` | Weekly |
+|---------------|-------------------------|----------------|-----------------|---------------------|--------|
+| `votes`       | read                    | **upsert row** | —               | **delete all**      | read   |
+| `reading_log` | **upsert per paper**    | read for text  | **upsert row**  | **delete all**      | read   |
+| `sent_ids`    | **rebuild (capped 500)**| —              | —               | **delete all**      | —      |
+| `last_batch`  | **wholesale replace**   | read for text  | —               | **delete all**      | —      |
+| `kv`          | read                    | **prefs bump** | **prefs bump**  | **delete all**      | read   |
+| `config.json` | read (checkout)         | —              | —               | **Contents API**    | —      |
 
 "upsert row" means a single `INSERT … ON CONFLICT DO UPDATE`. Two
 concurrent writes to the same row serialise with last-write-wins, which is
@@ -328,60 +295,28 @@ worker/index.js
         │ 2. Verify sender id == CHAT_ID → silently ignore otherwise
         │ 3. Branch on update type
         ▼
-        ┌──────── Instant path (no GitHub) ────────┐  ┌─ Dispatched path ─┐
-        │ v:like / v:dislike                       │  │ /digest, /reset,  │
-        │   answerCallbackQuery (toast)            │  │ confirm /clear    │
-        │   ctx.waitUntil(recordVote → D1)         │  │ (needs main.py)   │
-        │                                          │  │                   │
-        │ /stats, /help, /clear prompt             │  │                   │
-        │   sendMessage from Worker                │  │                   │
-        │ h:read_to_group                          │  │                   │
-        │   forwardMessage to To Read              │  │                   │
-        │   answerCallbackQuery                    │  │                   │
-        │   ctx.waitUntil(recordReadSaved → D1)    │  │                   │
-        │                                          │  │                   │
-        │ h:delete / h:confirm_delete /            │  │                   │
-        │ h:cancel_delete                          │  │                   │
-        │   editMessageReplyMarkup / deleteMessage │  │                   │
-        └──────────────────────────────────────────┘  └───────────────────┘
-              │                                                │
-              ▼                                                ▼
-        Telegram sees toast / message change             dispatchToGitHub(env, update)
-        within ~500ms; D1 row upserts in ~ms             POST /repos/<owner>/<repo>/dispatches
-                                                         Body: {event_type:"telegram-update",
-                                                                client_payload:{update}}
-                                                               │
-                                                               ▼
-                                                         process_update.yml
-                                                         runs python main.py --apply-update
-                                                         which talks to D1 via REST
+        │ v:like / v:dislike → toast + D1 votes          │
+        │ h:read_to_group → forward + D1 reading_log     │
+        │ h:delete* → Telegram-only                      │
+        │ /stats, /help, /clear, /reset → Worker       │
+        │ /reset, confirm /clear → GitHub Contents API   │
+        └────────────────────────────────────────────────┘
+              │
+              ▼
+        Telegram + D1 within ~500ms; no GitHub Actions for Telegram
 ```
 
-GitHub Actions (`--apply-update`) handles `/digest`, `/reset`, and
-confirmed `/clear` only. `/stats`, `/help`, votes, reads, deletes, and the
-`/clear` prompt are Worker-only.
+GitHub Actions runs only `python main.py` (daily) and
+`python main.py --weekly-digest` (Sunday). The Worker never fires
+`repository_dispatch`.
 
-### Why the two paths
+### Why Worker + Actions
 
-The whole point of the Worker is **the latency split**.
-
-Things in the **instant path** are pure Telegram-API calls plus a D1
-upsert — both happen at the edge in single-digit milliseconds. That's why
-deletes feel instantaneous and votes/reads are now too.
-
-Things in the **dispatched path** need the full Python environment —
-`/commands` build multi-line Markdown messages, `/digest` queries the
-recommender for the weekly summary, `/reset` mutates `config.json`.
-Workers are ephemeral, can't checkout the repo, can't run scikit-learn,
-so we hand off to GitHub Actions. That takes ~30s for runner spin-up +
-checkout + exec. The user-facing toast is already shown by then; the
-state catches up in the background.
-
-Pre-migration there was a third path: votes and reads went through *both*
-the Worker (for the toast) and GitHub Actions (to mutate JSON). That
-dispatch is gone — D1 supports an atomic `INSERT … ON CONFLICT DO UPDATE`
-directly from the Worker, so there's no reason to round-trip through
-GitHub for a single-row write.
+The Worker owns everything interactive (sub-second). The batch brain stays
+in Python because arXiv RSS, sklearn/embeddings, Grok summaries, and the
+weekly digest picker are a poor fit for a short-lived edge isolate.
+`/reset` and `/clear` update `config.json` via the GitHub Contents API
+so the next Actions checkout sees the new category list.
 
 ### Concrete examples
 
@@ -393,9 +328,12 @@ to Confirm/Cancel, sends toast "Confirm deletion?", returns 200 OK.
 "Recorded 👍", then `ctx.waitUntil` upserts the `votes` row via the
 `COALESCE` trick. No GitHub run.
 
-**Send `/digest`.** Worker doesn't match any callback handler, falls
-through to `dispatchToGitHub`. ~30s later `process_update.yml` finishes
-and the digest message appears in Telegram.
+**Send `/reset`.** Worker calls the GitHub Contents API to rewrite
+`config.json` with `shared/default_categories.json`, then replies in chat.
+No Actions run.
+
+**Sunday digest.** `weekly_digest.yml` runs `python main.py --weekly-digest`
+in GitHub Actions (sklearn profile + deep-read pick).
 
 ### Infrastructure notes
 
