@@ -568,6 +568,201 @@
       ],
       "sent_ts": "2026-05-19T08:02:31+00:00",
       "status": "sent"
+    },
+    "2605.16309": {
+      "key": "2605.16309",
+      "created_ts": "2026-05-19T10:01:24+00:00",
+      "grok_summary": {
+        "text": "TL;DR: ANNEAL edits a process knowledge graph with governed symbolic patches to eliminate recurring faults in LLM agents without altering model weights.\n\nWhy it may matter: It is the only tested system that drives holdout failure rates on repeated faults to 0% across four domains, while baselines such as ReAct and Reflexion retain 72-100% failures despite episodic recovery.\n\nBest for: Neuro-symbolic agent adaptation and persistent fault repair studies.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:01:24+00:00"
+      },
+      "text": "ANNEAL: Adapting LLM Agents via Governed Symbolic Patch Learning\n\nLLM-based agents can recover from individual execution errors, yet they repeatedly fail on the same fault when the underlying process knowledge--operator schemas, preconditions, and constraints--remains unrepaired. Existing self-evolving approaches address this gap by updating prompts, memory, or model weights, but none directly repair the symbolic structures that encode how tasks are executed, and few provide the governance guarantees required for safe deployment. We introduce ANNEAL, a neuro-symbolic agent that converts recurring failures into governed symbolic edits of a process knowledge graph without modifying foundation model weights. Its core mechanism, Failure-Driven Knowledge Acquisition (FDKA), localizes the responsible operator, synthesizes a typed patch through constrained LLM generation, and validates the proposal via multi-dimensional scoring, symbolic guardrails, and canary testing before commit. Every accepted edit carries full provenance and deterministic rollback capability. Across four domains and 27 multi-seed runs, ANNEAL is the only evaluated system that commits persistent structural repairs--strong baselines such as ReAct and Reflexion achieve high episodic recovery yet retain 72-100% holdout failure rates on recurring faults, whereas ANNEAL reduces these to 0% in the tested recurring-failure settings. Ablation confirms that removing FDKA eliminates all structural repairs and drops success rate by up to 26.7 percentage points. These results suggest that governed symbolic repair offers a complementary paradigm to weight-level and prompt-level adaptation for persistent fault elimination.",
+      "title": "ANNEAL: Adapting LLM Agents via Governed Symbolic Patch Learning",
+      "url": "https://arxiv.org/abs/2605.16309",
+      "categories": [
+        "cs.AI",
+        "cs.LG",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T10:01:24+00:00",
+      "status": "sent"
+    },
+    "2605.16473": {
+      "key": "2605.16473",
+      "created_ts": "2026-05-19T10:01:33+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper analyzes discretization stability of preconditioned annealed Langevin dynamics (ALD) on multimodal Gaussian mixtures, proving that Euler-Maruyama (EM) imposes a dimension-uniform stability constraint coupling the preconditioner to the annealed covariance scale, while an exponential-integrator scheme yields a controllable dimension-uniform KL bound under explicit spectral summability conditions on the smoothing covariance, component spectra, and preconditioner.\n\nWhy it may matter: It shows that dimension-independent sampling error control in high- or infinite-dimensional diffusion samplers is scheme-dependent rather than intrinsic to ALD, allowing initial smoothed laws whose KL divergence to the target may diverge with dimension.\n\nBest for: Analysis of Langevin or diffusion samplers in function space or high-dimensional multimodal targets.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:01:33+00:00"
+      },
+      "text": "Dimension-Uniform Discretization Analysis of Preconditioned Annealed Langevin Dynamics for Multimodal Gaussian Mixtures\n\nObtaining stable diffusion-based samplers in high- and infinite-dimensional settings is challenging because errors can accumulate across high-frequency coordinates and make the dynamics unstable under refinement of the finite-dimensional approximation of the underlying function-space problem. Discretization is a typical source of such errors, and preconditioning with a suitable spectral decay is one way to control their accumulation. In this paper, we study this problem for preconditioned annealed Langevin dynamics (ALD) applied to Gaussian mixtures. We first show that Euler-Maruyama (EM) discretization, by treating the stiff linear part of the annealed score with a forward Euler step, imposes a stability constraint coupling the preconditioner with the annealed covariance scale. Together with the conditions ensuring dimension-uniform control of the annealed dynamics, this constraint forces the initial smoothed law to remain uniformly close to the target across dimensions. We then consider an exponential-integrator scheme that integrates the stiff linear part of the annealed score exactly. Under explicit spectral summability conditions coupling the smoothing covariance, the component covariance spectra, and the preconditioner, we prove a dimension-uniform Kullback-Leibler (KL) bound for this scheme. This bound can be made arbitrarily small, uniformly in dimension, by allowing enough time for annealing and then refining the time mesh accordingly. Importantly, these conditions allow regimes in which the KL divergence between the target and the initial smoothed law diverges with dimension, showing that the restrictions imposed by EM are scheme-dependent rather than intrinsic to ALD.",
+      "title": "Dimension-Uniform Discretization Analysis of Preconditioned Annealed Langevin Dynamics for Multimodal Gaussian Mixtures",
+      "url": "https://arxiv.org/abs/2605.16473",
+      "categories": [
+        "stat.ML",
+        "cs.LG",
+        "cs.NA",
+        "math.NA",
+        "math.PR"
+      ],
+      "sent_ts": "2026-05-19T10:01:33+00:00",
+      "status": "sent"
+    },
+    "2605.16594": {
+      "key": "2605.16594",
+      "created_ts": "2026-05-19T10:01:39+00:00",
+      "grok_summary": {
+        "text": "TL;DR: fPINN-DeepONet combines an L2 approximation (first-order accurate) of the Caputo fractional derivative with physics-informed DeepONet operator learning to solve multi-term time-fractional mixed diffusion-wave equations (TFMDWEs) for both fixed and variable orders.\n\nWhy it may matter: Numerical tests cover spatially and temporally varying fractional orders plus noisy data on fractional partial differential equations (FPDEs).\n\nBest for: ML-based solvers for variable-order FPDEs.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:01:39+00:00"
+      },
+      "text": "fPINN-DeepONet: A Physics-Informed Operator Learning Framework for Multi-term Time-fractional Mixed Diffusion-wave Equations\n\nIn this paper, we develop a physics-informed deep operator learning framework for solving multi-term time-fractional mixed diffusion-wave equations (TFMDWEs). We begin by deriving an $L_2$ approximation, which achieves first-order accuracy for the Caputo fractional derivative of order $\\beta \\in (1,2)$. Building upon this foundation, we propose the fPINN-DeepONet framework, a novel approach that integrates operator learning with the $L_2$ approximation to efficiently solve fractional partial differential equations (FPDEs). Our framework is successfully applied to both fixed and variable fractional-order PDEs, demonstrating the framework's versatility and broad applicability. To evaluate the performance of the proposed model, we conduct a series of numerical experiments that involve dynamically varying fractional orders in both space and time, as well as scenarios with noisy data. These results highlight the accuracy, robustness, and efficiency of the fPINN-DeepONet framework.",
+      "title": "fPINN-DeepONet: A Physics-Informed Operator Learning Framework for Multi-term Time-fractional Mixed Diffusion-wave Equations",
+      "url": "https://arxiv.org/abs/2605.16594",
+      "categories": [
+        "math.NA",
+        "cs.LG",
+        "cs.NA"
+      ],
+      "sent_ts": "2026-05-19T10:01:40+00:00",
+      "status": "sent"
+    },
+    "2605.16748": {
+      "key": "2605.16748",
+      "created_ts": "2026-05-19T10:01:50+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Genflow is a compound AI architecture that pairs a retrieval-based Brand DNA extraction module with an adversarial multi-agent QC loop to iteratively critique and refine video frames until brand parameters are met.\n\nWhy it may matter: The work shows how multi-stage self-correction pipelines can raise brand-compliant video yield from 42% to 89% in enterprise settings, a pattern that may generalize to other constrained generative tasks.\n\nBest for: Researchers studying multi-agent systems, retrieval-augmented generation, or video diffusion models.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:01:50+00:00"
+      },
+      "text": "Genflow Ad Studio: A Compound AI Architecture for Brand-Aligned, Self-Correcting Video Generation\n\nRecent advancements in generative video models demonstrate high visual fidelity, yet their integration into enterprise environments is restricted by temporal inconsistencies and severe brand misalignment. Current monolithic architectures struggle to enforce rigid brand constraints, frequently hallucinating unapproved visual assets. We introduce Genflow, a Compound AI System designed to enforce brand consistency in generative media production. Our architecture integrates a retrieval-based 'Brand DNA' extraction module to parameterize generation according to established corporate identity guidelines. Furthermore, we implement an Adversarial Multi-Agent Quality Control (QC) loop. Instead of a single-pass generation, this pipeline employs evaluator agents to iteratively critique generated frames against the extracted parameters, prompting generator models to refine outputs until a deterministic consensus is reached. By transitioning to a multi-stage, self-correcting pipeline, Genflow improved the yield of brand-compliant video generations from 42% to 89%, establishing a robust framework for scalable, enterprise-grade generative systems.",
+      "title": "Genflow Ad Studio: A Compound AI Architecture for Brand-Aligned, Self-Correcting Video Generation",
+      "url": "https://arxiv.org/abs/2605.16748",
+      "categories": [
+        "cs.GR",
+        "cs.AI",
+        "cs.CV",
+        "cs.LG",
+        "cs.MA",
+        "cs.MM"
+      ],
+      "sent_ts": "2026-05-19T10:01:51+00:00",
+      "status": "sent"
+    },
+    "2605.17036": {
+      "key": "2605.17036",
+      "created_ts": "2026-05-19T10:02:03+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper tests autonomous generative AI agents on the MIT Beer Game (a multi-echelon inventory simulation) and shows that model capability plus four inference-time levers control cost and service levels, while introducing the agent bullwhip effect (amplification of decision variance across facilities and time) as an inherent multi-agent coordination failure.\n\nWhy it may matter: It supplies a mathematical argument that repeated sampling cannot suppress tail events caused by information delays and proposes Group Relative Policy Optimization (GRPO) post-training on system-level rewards as a concrete fix.\n\nBest for: AI researchers working on multi-agent RL reliability or operations models.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:03+00:00"
+      },
+      "text": "Reliability and Effectiveness of Autonomous AI Agents in Supply Chain Management\n\nThis paper studies autonomous generative AI agents in multi-echelon supply chains using the MIT Beer Game. We identify four inference-time levers that shape performance: model selection, policies and guardrails, centralized data sharing, and prompt engineering. Model capability is the dominant factor: an out-of-the-box reasoning model exceeds human-level performance, and optimized reasoning models reduce costs by up to 67% relative to human teams. However, strong average performance masks substantial reliability risks. We introduce the agent bullwhip effect, the amplification of decision unreliability across echelons, manifesting along two dimensions: decision variance increases both across facilities at the same point in time and within the same facility across time. We develop a mathematical framework showing that this phenomenon is inherent to multi-agent systems that involve coordination and information delays, and we demonstrate that repeated sampling fails to meaningfully reduce it. To address this limitation, we propose a Group Relative Policy Optimization (GRPO)-based reinforcement-learning post-training framework that trains a shared base LLM using system-level supply-chain rewards. GRPO post-training substantially reduces tail events, curtails agent bullwhip, and improves the reliability of autonomous supply-chain agents.",
+      "title": "Reliability and Effectiveness of Autonomous AI Agents in Supply Chain Management",
+      "url": "https://arxiv.org/abs/2605.17036",
+      "categories": [
+        "cs.AI",
+        "cs.LG",
+        "cs.MA",
+        "cs.SY",
+        "eess.SY"
+      ],
+      "sent_ts": "2026-05-19T10:02:03+00:00",
+      "status": "sent"
+    },
+    "2605.17275": {
+      "key": "2605.17275",
+      "created_ts": "2026-05-19T10:02:13+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper introduces a Hybrid Gaussian Process Regression-Historical Simulation (GPR-HS) framework that models individual asset volatilities via univariate GPR with a Matern 5/2 kernel and fixes inter-asset correlations from historical covariance, plus an Aggressive Noise Initialization (ANI) scheme to enforce Gram-matrix positive-definiteness.\n\nWhy it may matter: It targets numerical instability and tail-risk underestimation in GARCH-family and Exponentially Weighted Moving Average (EWMA) models for regulatory metrics such as Value-at-Risk (VaR) and Expected Shortfall (ES) on global equity indices.\n\nBest for: Gaussian-process applications to multivariate time-series forecasting or regulatory risk models.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:13+00:00"
+      },
+      "text": "A Hybrid Gaussian Process Regression Framework for Stable Volatility-Covariance Estimation: Evidence from Global Equity Indices\n\nAccurate forecasting of the Volatility-Covariance Matrix (VCV) is central to regulatory capital adequacy processes such as the Internal Capital Adequacy Assessment Process (ICAAP) and the Comprehensive Capital Analysis and Review (CCAR). Traditional econometric models, including GARCH-family and Exponentially Weighted Moving Average (EWMA) approaches, suffer from parametric rigidity, distributional assumptions, and numerical instability under stress, leading to systematic underestimation of tail risk. This paper proposes and validates a novel Hybrid Gaussian Process Regression-Historical Simulation (GPR-HS) framework for estimating Value-at-Risk (VaR) and Expected Shortfall (ES) across a diversified portfolio of seven major global equity indices. The framework decouples the VCV estimation problem: individual asset volatilities are modelled dynamically using Univariate GPR with a Matern 5/2 kernel, while inter-asset correlations are estimated via stable historical covariance. A key methodological contribution is the Aggressive Noise Initialization (ANI) strategy, which sets the initial White Noise kernel variance equal to the empirical variance of the training returns, ensuring Gram matrix positive-definiteness, regularization, and conservative, regulatory-compliant forecasts. Evaluated using an expanding window forward-chaining cross-validation scheme over June 2020 -June 2025, the GPR-HS framework achieves regulatory compliance in the majority of test splits; including a 100% ES pass rate at the portfolio level, while outperforming the static Historical VaR benchmark in 71.4% of univariate cases by Quadratic Loss and 100% of cases by violation count.",
+      "title": "A Hybrid Gaussian Process Regression Framework for Stable Volatility-Covariance Estimation: Evidence from Global Equity Indices",
+      "url": "https://arxiv.org/abs/2605.17275",
+      "categories": [
+        "q-fin.RM",
+        "cs.LG"
+      ],
+      "sent_ts": "2026-05-19T10:02:13+00:00",
+      "status": "sent"
+    },
+    "2605.17307": {
+      "key": "2605.17307",
+      "created_ts": "2026-05-19T10:02:21+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper trains Soft Actor-Critic agents inside a Markov Decision Process to output continuous portfolio weights, penalizing transaction costs and turnover while enforcing diversification, then compares five variants (flat vs hierarchical Dirichlet policies, LSTM vs Transformer encoders) on walk-forward tests across Nasdaq-100, Nikkei 225 and Euro Stoxx 50 from 2003-2026.\n\nWhy it may matter: Results show statistically significant risk-adjusted gains versus buy-and-hold only in the Euro Stoxx 50 and mainly in high-uncertainty regimes, with no consistent excess returns under HAC-robust inference and modest gains from cross-market ensembles.\n\nBest for: RL portfolio optimization or regime-dependent trading studies.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:21+00:00"
+      },
+      "text": "Deep Reinforcement Learning Framework for Diversified Portfolio Management Across Global Equity Markets\n\nThis study develops and evaluates a deep reinforcement learning framework for dynamic portfolio allocation across global equity markets. The Soft Actor-Critic algorithm is used to learn continuous portfolio weights within a Markov Decision Process, incorporating transaction costs, turnover penalties, and diversification constraints into the reward function. Five model configurations are compared, varying in reward formulation, policy structure (flat versus hierarchical Dirichlet), portfolio constraints, and temporal encoder (LSTM versus Transformer), and evaluated via walk-forward optimization across sixteen out-of-sample folds spanning 2003-2026 on the Nasdaq-100, Nikkei 225, and Euro Stoxx 50. Results show that RL strategies achieve competitive risk-adjusted performance primarily in the Euro Stoxx 50, where statistically significant abnormal returns are observed, but the central hypothesis is only partially confirmed: no strategy achieves statistically significant excess returns relative to Buy and Hold under HAC-robust inference across all markets. Regime analysis reveals that RL adds the most value during periods of elevated uncertainty, while ensemble aggregation across markets improves risk-adjusted performance and confirms the benefits of geographic diversification.",
+      "title": "Deep Reinforcement Learning Framework for Diversified Portfolio Management Across Global Equity Markets",
+      "url": "https://arxiv.org/abs/2605.17307",
+      "categories": [
+        "q-fin.PM",
+        "cs.AI",
+        "cs.LG",
+        "cs.NE",
+        "q-fin.TR"
+      ],
+      "sent_ts": "2026-05-19T10:02:22+00:00",
+      "status": "sent"
+    },
+    "2605.16311": {
+      "key": "2605.16311",
+      "created_ts": "2026-05-19T10:02:31+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Sign-Muon computes local Newton-Schulz polar factors of momentum buffers, transmits only entrywise signs, and aggregates via majority vote to produce a 1-bit matrix-aware update.\n\nWhy it may matter: It yields an O(1/sqrt(T)) nonconvex rate under spectral-norm smoothness while cutting communication to one integer sum-allreduce per step.\n\nBest for: Bandwidth-limited data-parallel training of large matrix-parameter models.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:31+00:00"
+      },
+      "text": "SignMuon: Communication-Efficient Distributed Muon Optimization\n\nDistributed training of large neural networks is bottlenecked by full-precision gradient communication and by coordinatewise optimizers that ignore the matrix structure of weight tensors. We propose Sign-Muon, a 1-bit, matrix-aware optimizer that combines majority-vote sign aggregation from signSGD with the polar-step framework of Muon. Each worker forms a Muon-style direction by taking the polar factor of its momentum via a Newton--Schulz iteration, transmits only the entrywise signs, and aggregates by majority vote; an optional local polar step further enforces orthogonality at no extra communication cost.\n  Under spectral-norm smoothness and bounded-variance stochastic gradients, the spectral-norm normalized sign step yields an $\\mathcal{O}(1/\\sqrt{T})$ nonconvex rate for an $\\ell_1$-based stationarity measure. With unimodal symmetric noise, majority vote across $M$ workers cuts the stochastic term by $1/\\sqrt{M}$, matching signSGD. In the $\\alpha$-$\\beta$ model, distributed Sign-Muon needs only one integer sum-allreduce per iteration; all orthogonalization is local, giving a $32\\times$ bandwidth reduction over float32 ($4\\times$ for int8).\n  Across 330 CIFAR-10/ResNet-50 configurations Sign-Muon attains the best validation accuracy (92.15\\%); its 4-GPU majority-vote variant reaches 92.02\\% with 37\\% less training time at matched effective batch. On nanoGPT, Sign-Muon achieves lower perplexity and better anytime performance than other sign-based baselines, with favorable weak-scaling up to 16 GPUs.",
+      "title": "SignMuon: Communication-Efficient Distributed Muon Optimization",
+      "url": "https://arxiv.org/abs/2605.16311",
+      "categories": [
+        "cs.LG",
+        "cs.DC"
+      ],
+      "sent_ts": "2026-05-19T10:02:31+00:00",
+      "status": "sent"
+    },
+    "2605.16312": {
+      "key": "2605.16312",
+      "created_ts": "2026-05-19T10:02:41+00:00",
+      "grok_summary": {
+        "text": "TL;DR: An adversary that selectively masks legal actions from a victim policy in self-play RL outperforms random masking and learned perturbation baselines across poker domains (6–5,531 information states) and two non-poker environments.\n\nWhy it may matter: The attack transfers across agents, is amplified by self-play, shows no recovery under continued masked training, and targets high-value states via reach-weighted contingent action capacity (CAC_w) and value-weighted CAC_v.\n\nBest for: RL robustness and multi-agent game papers.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:41+00:00"
+      },
+      "text": "When Actions Disappear: Adversarial Action Removal in Self-Play Reinforcement Learning\n\nWe study adversarial action masking in self-play reinforcement learning: an attacker selectively removes legal actions from a victim's action set. Unlike observation or action perturbations, removal eliminates decision options before the agent acts. Across poker games scaling from 6 to 5,531 information states and two non-poker domains, learned masking causes substantially more damage than random masking and learned perturbation baselines. The attack persists across Q-learning, PPO, NFSP, neural NFSP, and DQN victims; transfers across agents; is amplified by self-play; and shows no recovery under extended masked training. Mechanistically, the adversary targets high-value decision points, captured by reach-weighted contingent action capacity (CAC$_w$) and a value-weighted refinement CAC$_v$. These results identify action availability as a distinct robustness surface in self-play RL.",
+      "title": "When Actions Disappear: Adversarial Action Removal in Self-Play Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.16312",
+      "categories": [
+        "cs.LG",
+        "cs.AI"
+      ],
+      "sent_ts": "2026-05-19T10:02:41+00:00",
+      "status": "sent"
+    },
+    "2605.16315": {
+      "key": "2605.16315",
+      "created_ts": "2026-05-19T10:02:54+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Self-play RL agents collapse to a deterministic exploitation attractor when all positive-reach contingent decisions are removed, but one such decision prevents collapse across poker variants, matrix games, dice games, and multiple algorithms.\n\nWhy it may matter: The effect is a sharp threshold at zero reach-weighted contingent action capacity, driven by co-adaptation rather than the perturbation itself and worsened by function approximation.\n\nBest for: multi-agent RL stability and capacity-constrained learning dynamics",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T10:02:54+00:00"
+      },
+      "text": "A Structural Threshold in Decision Capacity Governs Collapse in Self-Play Reinforcement Learning\n\nWe show that a threshold in decision capacity determines whether self-play reinforcement learning agents collapse under asymmetric rule perturbations. Across poker variants, matrix games, a dice game, and multiple learning algorithms, eliminating all positive-reach contingent decisions causes rapid convergence to a deterministic exploitation attractor, a fixed point at near-maximal loss. Preserving even a single positive-reach contingent decision point prevents this collapse. A frozen baseline and fixed-opponent control confirm that the mechanism is co-adaptation under constraint, not the perturbation itself. The phenomenon is timing-invariant, fully reversible upon action restoration, and intensifies under function approximation. These results establish a sharp threshold at zero reach-weighted contingent action capacity, with severity scaling continuously via reach-weighted capacity in the tested domains.",
+      "title": "A Structural Threshold in Decision Capacity Governs Collapse in Self-Play Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.16315",
+      "categories": [
+        "cs.LG",
+        "cs.AI"
+      ],
+      "sent_ts": "2026-05-19T10:02:54+00:00",
+      "status": "sent"
     }
   }
 }
