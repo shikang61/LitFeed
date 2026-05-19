@@ -9,7 +9,7 @@ recommender/ops pass are marked **done** below.
 - [x] **Per-category models** — TF-IDF + embedding centroids per arXiv category, with global fallback.
 - [x] **Category preference learning** — weights in D1 `kv` updated from votes and reads.
 - [x] **Embeddings blended with TF-IDF** — `sentence-transformers/all-MiniLM-L6-v2` (disable via `LITFEED_DISABLE_EMBEDDINGS=1`).
-- [x] **Negative serendipity** — weekly cap per inferred theme before send.
+- [x] **Negative serendipity** — weekly cap per inferred theme (`MAX_PAPERS_PER_RUN × RUNS_PER_DAY`, 3 cron runs/day).
 - [x] **Lightweight commands in Worker** — `/stats` and `/help` answered at the edge.
 - [x] **Instant ack for slow commands** — `/digest` gets a “Generating digest…” message before GitHub dispatch.
 - [x] **CI guard for workflow YAML** — `.github/workflows/validate.yml`.

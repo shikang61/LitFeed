@@ -94,8 +94,11 @@ EARLY_ACTIVE_EXTRA_VOTES = 5
 EARLY_ACTIVE_RELEVANCE_FLOOR = -0.03
 DIVERSITY_MAX_JACCARD = 0.85
 READ_SIGNAL_WEIGHT = 1.5  # saved (Read) papers in the liked corpus
-THEME_WEEKLY_CAP = 3
+# cron-job.org fires daily_papers 3× (11:00, 14:00, 20:00) → up to RUNS_PER_DAY batches.
+RUNS_PER_DAY = 3
 THEME_LOOKBACK_DAYS = 7
+# Max papers per inferred theme in the lookback window (~one full day's sends).
+THEME_WEEKLY_CAP = MAX_PAPERS_PER_RUN * RUNS_PER_DAY
 CATEGORY_PREF_ALPHA = 0.08
 TFIDF_BLEND = 0.5
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"

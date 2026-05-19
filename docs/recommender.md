@@ -262,7 +262,7 @@ Implemented in `recommender.fit_profile` / `score_profile` and `main.py`:
 | Per-category models | TF-IDF + embedding centroids per primary category when ≥2 docs on a side. |
 | Category preferences | D1 `kv.category_preferences` nudges scores via `CATEGORY_PREF_ALPHA`. |
 | Blended scoring | `TFIDF_BLEND` (default 0.5) mixes TF-IDF and `all-MiniLM-L6-v2`; set `LITFEED_DISABLE_EMBEDDINGS=1` to skip embeddings. |
-| Negative serendipity | `THEME_WEEKLY_CAP` (3) per inferred theme over `THEME_LOOKBACK_DAYS` (7). |
+| Negative serendipity | `THEME_WEEKLY_CAP` (= `MAX_PAPERS_PER_RUN × RUNS_PER_DAY`, default 30) per theme over 7 days. |
 | Vote cap | Oldest votes dropped beyond `MAX_VOTES_PER_SIDE` (250) per bucket. |
 
 ## 8. If you want to improve it
