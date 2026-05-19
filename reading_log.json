@@ -380,6 +380,194 @@
       ],
       "sent_ts": "2026-05-19T01:16:25+00:00",
       "status": "sent"
+    },
+    "2605.16573": {
+      "key": "2605.16573",
+      "created_ts": "2026-05-19T08:01:20+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Wavelet Flow Matching (WFM) runs conditional flow matching (optimal transport) directly on a fixed multi-scale wavelet decomposition of the state, using a U-Net to predict velocity fields at each wavelet scale, eliminating any separately trained autoencoder.\n\nWhy it may matter: On three chaotic fluid systems it reports better long-horizon rollout stability, point-wise accuracy and spectral coherence than both deterministic baselines and latent generative models.\n\nBest for: Physics PhD students building or benchmarking generative emulators for PDE-governed multi-scale flows.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:01:20+00:00"
+      },
+      "text": "Wavelet Flow Matching for Multi-Scale Physics Emulation\n\nAccurate emulation of multi-scale physical systems governed by PDEs demands models that remain stable over long autoregressive rollouts while preserving fine-scale structures. Deterministic emulators produce overly-smoothed predictions, while generative approaches better capture details but are costly. Latent-space generative models have emerged as a compromise but with the additional cost of separately pre-trained autoencoders. We propose Wavelet Flow Matching (WFM), a novel generative emulator that overcomes current trade-offs between cost and skill by performing optimal-transport directly in the multi-scale wavelet space. Rather than learning a latent compression, WFM leverages the hierarchical structure of a U-Net to jointly predict transport velocities of a prescribed wavelet representation. On three challenging systems of chaotic fluid dynamics, WFM achieves superior long-horizon stability, accuracy and spectral coherence compared to state-of-the-art models. Our results clearly position the wavelet space as an effective training-free representation for generative emulation of complex physical dynamics.",
+      "title": "Wavelet Flow Matching for Multi-Scale Physics Emulation",
+      "url": "https://arxiv.org/abs/2605.16573",
+      "categories": [
+        "cs.LG",
+        "cs.AI",
+        "physics.flu-dyn"
+      ],
+      "sent_ts": "2026-05-19T08:01:20+00:00",
+      "status": "sent"
+    },
+    "2605.16699": {
+      "key": "2605.16699",
+      "created_ts": "2026-05-19T08:01:28+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper models capped-usage SaaS (LLM tokens, cloud invocations) as insurance products and applies frequency-severity decomposition, premium calculation principles, and Monte Carlo reserve adequacy to set prices and hold capital against heavy-tailed per-user demand.\n\nWhy it may matter: It replaces standard SaaS unit-economics metrics with actuarial reserve and tail-risk tools drawn from health-insurance literature (Arrow 1963 et seq.), producing different pricing and capital requirements for the same observed tiers.\n\nBest for: ML or systems researchers who need quantitative risk models for subscription caps or stochastic consumption.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:01:28+00:00"
+      },
+      "text": "Your SaaS Is an Insurance Product: A Modeling Framework\n\nCapped-usage SaaS products -- LLM subscriptions such as Claude Code and ChatGPT, cloud platforms such as Vercel and Cloudflare Workers, corporate benefit platforms, identity-verification services with liability transfer -- share a structural signature with insurance products: a fixed premium decoupled from realized consumption, stochastic per-user demand with heavy-tailed severity, a non-fungible cap that resets on a fixed schedule, and a portfolio-level exposure that requires reserve adequacy under tail risk. We argue that this is not an analogy. It is the same operational problem actuarial science has been tooled for decades to address, restated with new dependent variables (tokens, bandwidth bytes, function-invocations, gym check-ins) in place of medical claims. This paper proposes a modeling framework for capped-usage SaaS pricing built from frequency-severity decomposition, premium calculation principles, and Monte Carlo reserve adequacy. We map the framework to publicly observable subscription tiers in two domains (LLM services and cloud platforms), ground it in canonical health-insurance economics (Arrow 1963; Pauly 1968; Manning et al. 1987; Brot-Goldberg et al. 2017), and demonstrate divergence from traditional unit economics through a worked example. The contribution is operational rather than theoretical: not a new theorem, but vocabulary and tools currently absent from cs.LG/stat.ML practice.",
+      "title": "Your SaaS Is an Insurance Product: A Modeling Framework",
+      "url": "https://arxiv.org/abs/2605.16699",
+      "categories": [
+        "cs.LG",
+        "q-fin.RM",
+        "stat.ML"
+      ],
+      "sent_ts": "2026-05-19T08:01:29+00:00",
+      "status": "sent"
+    },
+    "2605.17076": {
+      "key": "2605.17076",
+      "created_ts": "2026-05-19T08:01:37+00:00",
+      "grok_summary": {
+        "text": "TL;DR: S-Bus is an HTTP middleware that logs per-agent GET operations in a DeliveryLog to reconstruct read sets at commit time and enforce Observable-Read Isolation (ORI), a partial causal consistency model that eliminates Structural Race Conditions (SRCs) on shared natural-language state.\n\nWhy it may matter: It matches PostgreSQL 17 SERIALIZABLE and Redis 7 WATCH/MULTI on preventing write-write and stale-read conflicts across 427k HTTP-409 cases without agent SDK modifications.\n\nBest for: Multi-agent LLM frameworks and distributed state coordination.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:01:37+00:00"
+      },
+      "text": "S-Bus: Automatic Read-Set Reconstruction for Multi-Agent LLM State Coordination\n\nConcurrent LLM agents sharing mutable natural-language state produce Structural Race Conditions (SRCs): write-write and cross-shard stale-read conflicts that silently corrupt agent output. Existing multi-agent frameworks (LangGraph, CrewAI, AutoGen) provide no write-ownership semantics over shared state.\n  We present S-Bus, an HTTP middleware whose central mechanism is a server-side DeliveryLog: a per-agent log of HTTP GET operations that automatically reconstructs each agent's read set at commit time without agent SDK changes under HTTP/1.1. The consistency property the DeliveryLog provides -- Observable-Read Isolation (ORI), a partial causal consistency over the HTTP-observable projection of the read set -- prevents structural race conditions when agents collaborate via shared shards.\n  Three contributions: (C1) The DeliveryLog mechanism for automatic HTTP-traffic-based read-set reconstruction, with three-tier mechanised evidence: ReadSetSoundness and ORICommitSafety machine-checked in TLAPS (modulo one retained typing axiom); exhaustive TLC at N=3 (20,763,484 distinct states, zero violations); Dafny discharges 9 inductive soundness lemmas. (C2) Empirical structural-conflict prevention parity against PostgreSQL 17 SERIALIZABLE and Redis 7 WATCH/MULTI on shared-shard contention sweeps with 427,308 active HTTP-409 conflicts: zero Type-I corruptions across all three backends. (C3) ORI's operating envelope is topology-conditional: semantically neutral in dedicated-shard workloads; harmful in single-shard collaborative writing because preservation propagates concurrent contradictions.\n  Source code: https://github.com/sajjadanwar0/sbus",
+      "title": "S-Bus: Automatic Read-Set Reconstruction for Multi-Agent LLM State Coordination",
+      "url": "https://arxiv.org/abs/2605.17076",
+      "categories": [
+        "cs.LG",
+        "cs.AI",
+        "cs.DC",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T08:01:37+00:00",
+      "status": "sent"
+    },
+    "2605.17471": {
+      "key": "2605.17471",
+      "created_ts": "2026-05-19T08:01:44+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper analyzes slow convergence in quantization-aware training (QAT) of language models by computing the eigenvalue spectrum of loss-surface Hessians and introduces WinQ, which periodically resets weights to linear interpolations between full-precision and quantized values while adding noise-injected gradients to regularize the Hessian.\n\nWhy it may matter: It shows that QAT weights converge to flat saddle-point regions where an increasing fraction of Hessian eigenvalues cluster near zero, with smaller magnitudes at sub-4-bit widths, and reports up to 4x faster training plus 8.8% gains over prior sub-4-bit methods across 16 model-quantizer-bitwidth settings.\n\nBest for: Work on low-bit transformer quantization or non-convex optimization near saddle points.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:01:44+00:00"
+      },
+      "text": "WinQ: Accelerating Quantization-Aware Training of Language Models Around Saddle Points\n\nQuantization-aware training (QAT) is widely adopted to quantize language models by training full-precision weights using gradients from the quantized model. The main bottleneck is its slow convergence and early performance plateau, particularly below 4-bit-widths. While this problem has been observed in prior work, its precise cause remains unclear. In this paper, we analyze the convergence of QAT by estimating the spectrum of the loss-surface Hessians. We find that the weights converge to flat regions around saddle points, where a large fraction of the Hessian eigenvalues are both positive and negative. During training, an increasing fraction of Hessian eigenvalues concentrates around zero, whose magnitude decreases. At lower bit-widths, the magnitude of eigenvalues in the Hessian spectrum is significantly smaller. To mitigate these issues, we propose an algorithm called WinQ to accelerate QAT, which involves: (1) periodically resetting weights to the linear interpolation of full-precision and quantized weights, reducing the distance to the quantization grid and increasing eigenvalue magnitude, and (2) computing gradients of noise-injected weights to regularize the Hessian. Extensive experiments show that WinQ accelerates QAT by up to 4 times across various quantization methods and models. Under the same training cost, WinQ improves state-of-the-art sub-4-bit quantization by up to 8.8%. These results are consistent across 16 settings with different language models, quantization methods, and bit widths.",
+      "title": "WinQ: Accelerating Quantization-Aware Training of Language Models Around Saddle Points",
+      "url": "https://arxiv.org/abs/2605.17471",
+      "categories": [
+        "cs.LG",
+        "cs.NA",
+        "math.NA"
+      ],
+      "sent_ts": "2026-05-19T08:01:45+00:00",
+      "status": "sent"
+    },
+    "2605.17698": {
+      "key": "2605.17698",
+      "created_ts": "2026-05-19T08:01:52+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Agent Bazaar is a multi-agent simulation framework that tests LLMs as autonomous economic agents in B2C and C2C marketplaces, identifies two failure modes (Algorithmic Instability causing price crashes and Sybil Deception producing Lemon Markets), and shows that REINFORCE++ with an adaptive curriculum yields a 9B model with higher Economic Alignment than frontier models.\n\nWhy it may matter: Economic Alignment, quantified by the 4-component Economic Alignment Score (stability, integrity, welfare, profitability), is shown to be orthogonal to general capability and improvable via targeted RL rather than scale alone.\n\nBest for: Multi-agent RL and AI alignment researchers working on market simulations.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:01:52+00:00"
+      },
+      "text": "Agent Bazaar: Enabling Economic Alignment in Multi-Agent Marketplaces\n\nThe deployment of Large Language Models (LLMs) as autonomous economic agents introduces systemic risks that extend beyond individual capability failures. As agents transition to directly interacting with marketplaces, their collective behavior can amplify volatility and mask deception at scale. We introduce the Agent Bazaar, a multi-agent simulation framework for evaluating Economic Alignment, the capacity of agentic systems to preserve market stability and integrity. We identify two failure modes: (1) Algorithmic Instability in a B2C market (\"The Crash\"), where firms amplify price volatility until the market collapses, and (2) Sybil Deception in a C2C market (\"The Lemon Market\"), where a single deceptive agent controlling multiple coordinated seller identities floods the market with fraudulent listings, eroding trust and consumer welfare. We evaluate frontier and open-weight models across both scenarios and find that models largely fail to self-regulate, with failure severity varying by model rather than by size. We propose economically aligned harnesses, Stabilizing Firms and Skeptical Guardians, that improve outcomes but remain fragile under harder market conditions. To close this gap, we train agents with REINFORCE++ using an adaptive curriculum, producing a 9B model that outperforms all evaluated frontier and open-weight models. We propose the Economic Alignment Score (EAS), a 4-component scalar metric aggregating stability, integrity, welfare, and profitability, enabling direct cross-model comparison. Our results show that economic alignment is orthogonal to general capability and can be directly trained with targeted RL.",
+      "title": "Agent Bazaar: Enabling Economic Alignment in Multi-Agent Marketplaces",
+      "url": "https://arxiv.org/abs/2605.17698",
+      "categories": [
+        "cs.LG",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T08:01:52+00:00",
+      "status": "sent"
+    },
+    "2605.18024": {
+      "key": "2605.18024",
+      "created_ts": "2026-05-19T08:02:00+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper proposes an interaction-breaking adversarial learning (IBAL) framework for robust multi-agent reinforcement learning (MARL) that builds information-theoretic attacks to corrupt inter-agent coordination via perturbed observations and actions, then trains policies to remain effective under those disruptions.\n\nWhy it may matter: It fills a gap left by prior value-oriented attacks by targeting interaction structures directly and shows gains on standard MARL benchmarks plus agent-missing scenarios.\n\nBest for: MARL researchers focused on adversarial robustness or coordination under partial observability.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:02:00+00:00"
+      },
+      "text": "Interaction-Breaking Adversarial Learning Framework for Robust Multi-Agent Reinforcement Learning\n\nCooperation is central to multi-agent reinforcement learning (MARL), yet learned coordination can be fragile when external perturbations disrupt inter-agent interactions. Prior robust MARL methods have primarily considered value-oriented attacks, leaving a gap in robustness when interaction structures themselves are corrupted. In this paper, we propose an interaction-breaking adversarial learning (IBAL) framework that takes an information-theoretic view to construct attacks that impede coordination by perturbing agents' observations and actions, and trains agents to perform reliably under such disruptions. Empirically, our approach improves robustness over existing robust MARL baselines across diverse attack settings and yields stronger performance even under agent-missing scenarios.",
+      "title": "Interaction-Breaking Adversarial Learning Framework for Robust Multi-Agent Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.18024",
+      "categories": [
+        "cs.LG",
+        "cs.AI",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T08:02:00+00:00",
+      "status": "sent"
+    },
+    "2605.18535": {
+      "key": "2605.18535",
+      "created_ts": "2026-05-19T08:02:06+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Position paper claims personal agents must shift from cloud scaling to edge execution because agentic tasks require tight coupling to local context, zero-latency loops, and high-fidelity interaction data that cloud transmission destroys.\n\nWhy it may matter: It identifies three concrete architectural constraints—Prefrontal Turn (executive control over pre-training scale), Data-Geography Paradox (loss of local file hierarchies, sensor streams, and OS states), and interaction-alignment loop (real-time implicit preference signals)—that determine whether current agent frameworks can scale beyond toy settings.\n\nBest for: Researchers working on on-device ML, multi-agent systems, or embodied AI who need falsifiable deployment predictions.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:02:06+00:00"
+      },
+      "text": "Beyond Scaling: Agents Are Heading to the Edge\n\nThe bottleneck of useful agentic intelligence has shifted from compressing world knowledge into a single model to executing a coordinated system. This position paper argues that personal-agent architecture must move to the edge because the core properties of agentic intelligence tasks, particularly their structural coupling with high-fidelity local context and the need for zero-latency execution loops, do not sit well with cloud-centric designs. We develop this claim through three structural shifts. First, the Prefrontal Turn: the main marginal lever of capability has moved from pre-training scale to framework-level executive control. Such control must remain physically close to the environment of action if the agent is to preserve cognitive alignment. Second, the Data-Geography Paradox, the ``dark matter'' of agentic data (local file hierarchies, real-time sensor streams, and transient OS states) degrades, disappears, or loses meaning once prepared for cloud transmission, thereby cutting the agent off from ground-truth context. Third, the interaction-alignment loop, the only economically and ecologically sustainable source of agentic refinement data is the high-fidelity implicit preference signal produced through real-time local interaction. Third, the interaction-alignment loop, the only economically and ecologically sustainable source of agentic refinement data is the high-fidelity implicit preference signal produced through real-time local interaction. We conclude with falsifiable predictions for the next deployment cycle of personal agents.",
+      "title": "Beyond Scaling: Agents Are Heading to the Edge",
+      "url": "https://arxiv.org/abs/2605.18535",
+      "categories": [
+        "cs.LG",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T08:02:06+00:00",
+      "status": "sent"
+    },
+    "2605.16259": {
+      "key": "2605.16259",
+      "created_ts": "2026-05-19T08:02:14+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper reports systematic benchmarks of diffusion-model inference on Apple M3 Ultra, testing CoreML conversion, quantization, Token Merging, Neural Engine offload, knowledge distillation (SDXS-512), optical-flow skipping and related methods, ultimately reaching 22.7 FPS real-time camera img2img at 512² via a 3-thread CoreML pipeline.\n\nWhy it may matter: It demonstrates that standard CUDA-derived speed-ups (quantization, parallel inference, Neural Engine use) produce little or no gain on Apple Silicon’s unified-memory architecture and supplies concrete counter-examples.\n\nBest for: Hardware-specific diffusion inference studies or Apple Silicon deployment work.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:02:14+00:00"
+      },
+      "text": "Systematic Optimization of Real-Time Diffusion Model Inference on Apple M3 Ultra\n\nWhile real-time image generation using diffusion models has advanced rapidly on NVIDIA GPUs, systematic optimization research on non-CUDA platforms such as Apple Silicon remains extremely limited. In this study, we conducted comprehensive optimization experiments across 10 phases targeting the Apple M3 Ultra (60-core GPU, 512 GB unified memory) with the goal of achieving real-time camera img2img transformation. We explored a wide range of techniques including CoreML conversion, quantization, Token Merging, Neural Engine utilization, compact model exploration, frame interpolation, kNN search-based synthesis, pix2pix-turbo, optical flow frame skipping, and knowledge distillation, quantitatively evaluating the effectiveness of each approach. Ultimately, by combining CoreML conversion of the distillation-specialized model SDXS-512 with a 3-thread camera pipeline, we achieved real-time camera img2img transformation at 22.7 FPS at 512x512 resolution. The primary contribution of this work is the systematic demonstration that optimization insights established for CUDA are not necessarily effective on Apple Silicon's unified memory architecture. We reveal an optimization landscape fundamentally different from that of NVIDIA GPUs -- including the absence of speedup from quantization, the ineffectiveness of parallel inference, and the unsuitability of the Neural Engine for large-scale models -- and provide practical guidelines for diffusion model inference on Apple Silicon.",
+      "title": "Systematic Optimization of Real-Time Diffusion Model Inference on Apple M3 Ultra",
+      "url": "https://arxiv.org/abs/2605.16259",
+      "categories": [
+        "cs.LG",
+        "cs.AI",
+        "cs.DC"
+      ],
+      "sent_ts": "2026-05-19T08:02:15+00:00",
+      "status": "sent"
+    },
+    "2605.16262": {
+      "key": "2605.16262",
+      "created_ts": "2026-05-19T08:02:23+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper introduces mirror descent algorithms for variational inequality (VI) problems subject to functional inequality constraints, alternating productive and non-productive steps with multiple step-size rules and proving optimal convergence rates for bounded monotone operators and Lipschitz convex constraints.\n\nWhy it may matter: It extends standard VI solvers to cases with many constraints or inexact subgradient information via a δ-monotone operator analysis, which may apply to constrained saddle-point or minimax problems arising in physics-informed machine learning or simulation-based optimization.\n\nBest for: Optimization researchers focused on constrained VI or mirror descent methods.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:02:23+00:00"
+      },
+      "text": "Mirror Descent-Type Algorithms for the Variational Inequality Problem with Functional Constraints\n\nVariational inequalities play a key role in machine learning research, such as generative adversarial networks, reinforcement learning, adversarial training, and generative models. This paper is devoted to the constrained variational inequality problems with functional constraints (inequality-type constraints). We propose some mirror descent-type algorithms that switch between productive and non-productive steps depending on the values of the functional constraints at iterations, with many different step size rules and stopping criteria. We analyze the proposed algorithms and prove their optimal convergence rate to achieve a solution with desired accuracy, for problems with bounded and monotone operators and Lipschitz convex functional constraints. In addition, we propose a modification of the proposed algorithms by considering each functional constraint in the calculation when we have a productive step, as well as the first constraint that violates the feasibility. This modification can save the running time of algorithms when we have many functional constraints. In addition, we provide an analysis of the proposed algorithms for $\\delta$-monotone operators, allowing us to apply the proposed algorithms, as a special case, to constrained minimization problems when we do not have access to the exact information about the subgradient of the objective function. Numerical experiments that illustrate the work and performance of the proposed algorithms are also given.",
+      "title": "Mirror Descent-Type Algorithms for the Variational Inequality Problem with Functional Constraints",
+      "url": "https://arxiv.org/abs/2605.16262",
+      "categories": [
+        "cs.LG",
+        "math.OC"
+      ],
+      "sent_ts": "2026-05-19T08:02:23+00:00",
+      "status": "sent"
+    },
+    "2605.16302": {
+      "key": "2605.16302",
+      "created_ts": "2026-05-19T08:02:30+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper introduces Implicit Behavior Policy Optimization (IBPO), which samples multiple LLM reasoning trajectories per input and uses their differences to build an implicit process-level advantage estimator that converts sparse terminal rewards into step-sensitive signals for RL training.\n\nWhy it may matter: It targets high gradient variance from uniform credit propagation across intermediate decisions in multi-step LLM reasoning, yielding measurable gains in training stability on mathematical and code benchmarks.\n\nBest for: RL researchers focused on credit assignment or process supervision in sparse-reward LLM settings.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T08:02:30+00:00"
+      },
+      "text": "Reducing Credit Assignment Variance via Counterfactual Reasoning Paths\n\nReinforcement learning for multi-step reasoning with large language models (LLMs) often relies on sparse terminal rewards, leading to poor credit assignment conditions where the final feedback is evenly propagated across all intermediate decisions. This results in high gradient variance, unstable training, and numerous ineffective updates, ultimately causing the model to fail and preventing sustained improvement. We introduce a counterfactual comparison-based credit assignment framework, which samples multiple reasoning trajectories under the same input. By treating their differences as an implicit approximation of alternative decisions, we construct an implicit process-level advantage estimator that transforms sparse terminal rewards into step-sensitive learning signals. Based on this, we propose Implicit Behavior Policy Optimization (IBPO), which significantly improves training stability and performance upper bounds on mathematical and code reasoning benchmarks, pointing to a promising direction for unlocking the performance potential of LLMs.",
+      "title": "Reducing Credit Assignment Variance via Counterfactual Reasoning Paths",
+      "url": "https://arxiv.org/abs/2605.16302",
+      "categories": [
+        "cs.LG",
+        "cs.AI",
+        "cs.CL"
+      ],
+      "sent_ts": "2026-05-19T08:02:31+00:00",
+      "status": "sent"
     }
   }
 }
