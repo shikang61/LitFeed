@@ -493,7 +493,7 @@ async function sendStats(env) {
     }
 
     const meaningfulRows = await env.DB.prepare(
-      "SELECT title, text FROM reading_log WHERE status IN ('saved', 'read')"
+      "SELECT title, text FROM reading_log WHERE status = 'saved'"
     ).all();
     const topics = formatTopicSummary(meaningfulRows.results || []);
 
@@ -514,9 +514,7 @@ async function sendStats(env) {
       `*Filter:* ${status}\n` +
       `*Scoring:* TF-IDF + embeddings\n\n` +
       `*Reading*\n` +
-      `Saved: ${counts.saved ?? 0}\n` +
-      `Read: ${counts.read ?? 0}\n` +
-      `Skipped: ${counts.skipped ?? 0}\n\n` +
+      `Saved: ${counts.saved ?? 0}\n\n` +
       `*Topics:* ${topics}` +
       prefLine;
     await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text, parse_mode: "Markdown" });

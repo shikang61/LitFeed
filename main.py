@@ -130,7 +130,6 @@ TOPIC_KEYWORDS = {
     "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"],
 }
 
-
 # ---------- config + votes ----------
 #
 # All persistence lives in Cloudflare D1 via ``state_store`` (see
@@ -465,9 +464,7 @@ def _format_stats(votes, reading_log):
         f"*Filter:* {status}\n"
         f"*Scoring:* TF-IDF + embeddings ({embed_note})\n\n"
         f"*Reading*\n"
-        f"Saved: {reading_counts.get('saved', 0)}\n"
-        f"Read: {reading_counts.get('read', 0)}\n"
-        f"Skipped: {reading_counts.get('skipped', 0)}\n\n"
+        f"Saved: {reading_counts.get('saved', 0)}\n\n"
         f"*Topics:* {topics}"
         f"{pref_line}"
     )
@@ -503,7 +500,7 @@ def format_topic_summary(reading_log):
     meaningful = [
         entry
         for entry in reading_log.get("papers", {}).values()
-        if entry.get("status") in ("saved", "read")
+        if entry.get("status") == "saved"
     ]
     topics = top_topics_for_entries(meaningful)
     if not topics:
@@ -552,8 +549,6 @@ def format_weekly_digest(votes, reading_log):
     lines = [
         "*Weekly reading digest*",
         f"Saved: {counts.get('saved', 0)}",
-        f"Read: {counts.get('read', 0)}",
-        f"Skipped: {counts.get('skipped', 0)}",
     ]
     if topics:
         lines.append("Themes: " + ", ".join(f"`{escape_markdown(t)}`" for t, _ in topics))

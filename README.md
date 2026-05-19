@@ -2,7 +2,7 @@
 
 Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions, with optional sub-second button reactions through a Cloudflare Worker webhook.
 
-Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 and reading-habit buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see, and use the reading log to save, read, skip, and annotate papers.
+Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 and reading-habit buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see, and use the reading log to save papers to your To Read queue.
 
 ## Architecture
 
