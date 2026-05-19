@@ -9,7 +9,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: write  # required to commit config.json changes back to repo
+  contents: read
 
 concurrency:
   group: telegram-poll
@@ -43,17 +43,10 @@ jobs:
           GROK_MODEL: ${{ vars.GROK_MODEL }}
           # Webhook is the update consumer; getUpdates would 409 here.
           LITFEED_DISABLE_POLL: "1"
+          # Cloudflare D1 holds all runtime state (votes, reading_log,
+          # sent_ids, last_batch, last_update_id). config.json carries only
+          # categories and is rewritten only on /reset (process_update.yml).
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          CF_D1_API_TOKEN: ${{ secrets.CF_D1_API_TOKEN }}
         run: python main.py
-
-      - name: Commit state changes
-        run: |
-          if [[ -n "$(git status --porcelain -- config.json votes.json reading_log.json)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add config.json votes.json reading_log.json 2>/dev/null || true
-            git commit -m "chore: update state from daily run" || exit 0
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
-          else
-            echo "No state changes."
-          fi

@@ -9,3 +9,13 @@ compatibility_date = "2025-01-01"
 #   GITHUB_REPO
 #   GITHUB_PAT
 #   WEBHOOK_SECRET
+
+# D1: the Worker writes votes and reading-log updates directly to D1 so
+# button taps don't have to round-trip through a GitHub Actions workflow.
+# Create the database once with `wrangler d1 create litfeed_state`, paste
+# the printed `database_id` below, then apply the schema with:
+#   wrangler d1 execute litfeed_state --remote --file ../migrations/0001_init.sql
+[[d1_databases]]
+binding = "DB"
+database_name = "litfeed_state"
+database_id = "ed25ac4c-4a48-4df2-ae69-7b0e389897af"

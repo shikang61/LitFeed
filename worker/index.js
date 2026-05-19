@@ -3,10 +3,12 @@
  *
  * Telegram delivers each update here. We split work into two paths:
  *
- *   1. Instant (handled in this Worker, sub-second toast feedback):
- *      - v:like / v:dislike → answer callback with toast, then dispatch so
- *        main.py records the vote in votes.json.
+ *   1. Instant (handled in this Worker, sub-second toast feedback + direct
+ *      D1 writes — no GitHub round-trip):
+ *      - v:like / v:dislike → answer callback with toast, then upsert the
+ *        vote row in the D1 `votes` table.
  *      - h:read_to_group  → forward the paper message to LITFEED_TO_READ_CHAT_ID
+ *        and upsert reading_log.status='saved' in D1.
  *      - h:delete         → swap keyboard to confirm/cancel
  *      - h:confirm_delete → delete the message
  *      - h:cancel_delete  → restore the vote/Read/Delete keyboard
@@ -14,10 +16,8 @@
  *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
  *      .github/workflows/process_update.yml using `python main.py --apply-update`):
  *      - All /commands (e.g. /list, /reset, /digest, /why, /stats, /help)
- *      - v:like / v:dislike are ALSO dispatched (webhook_handled=true) so
- *        votes.json gets the new entry.
- *      - h:read_to_group is ALSO dispatched (webhook_handled=true) so
- *        reading_log can be marked "saved".
+ *        These mutate config.json or trigger Telegram message sends, so they
+ *        still run inside main.py.
  *
  * Required Worker secrets (set via `wrangler secret put NAME`):
  *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
@@ -28,6 +28,9 @@
  *                           or a classic PAT with the `repo` scope
  *   WEBHOOK_SECRET        — random string passed to setWebhook?secret_token=…;
  *                           Telegram echoes it back in X-Telegram-Bot-Api-Secret-Token
+ *
+ * Required D1 binding (declared in wrangler.toml):
+ *   DB → litfeed_state database
  */
 
 const TG_API = "https://api.telegram.org";
@@ -81,8 +84,8 @@ async function handleCallback(cb, update, env, ctx) {
   if (kind === "v" && (action === "like" || action === "dislike")) {
     const toast = action === "like" ? "Recorded 👍" : "Recorded 👎";
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: toast });
-    // Dispatch so main.py records the vote in votes.json.
-    ctx.waitUntil(dispatchToGitHub(env, update, true));
+    // Write the vote directly to D1; no GitHub round-trip.
+    ctx.waitUntil(recordVote(env, key, action === "like" ? "liked" : "disliked"));
     return true;
   }
 
@@ -156,8 +159,8 @@ async function handleCallback(cb, update, env, ctx) {
       return true;
     }
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Forwarded to To Read." });
-    // Also dispatch so reading_log can be updated to "saved".
-    ctx.waitUntil(dispatchToGitHub(env, update, true));
+    // Mark the paper as "saved" in D1; no GitHub round-trip.
+    ctx.waitUntil(recordReadSaved(env, key));
     return true;
   }
 
@@ -182,6 +185,63 @@ async function tg(env, method, body) {
   } catch (e) {
     console.error(`[telegram] ${method} error`, e);
     return null;
+  }
+}
+
+/**
+ * Upsert a vote into D1. ``bucket`` is "liked" or "disliked".
+ *
+ * The vote row needs a `text` column for the TF-IDF recommender. The Worker
+ * only knows the paper key (callback_data is capped at 64 bytes by Telegram),
+ * so we look up the text in this order:
+ *   1. reading_log.text (set when the paper was first sent)
+ *   2. last_batch.text (set by the most recent daily run)
+ * If neither exists (shouldn't happen in steady state), we store the empty
+ * string and let main.py backfill at the next save_votes opportunity.
+ */
+async function recordVote(env, key, bucket) {
+  if (!env.DB) {
+    console.error("[d1] DB binding missing; cannot record vote.");
+    return;
+  }
+  const ts = new Date().toISOString();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO votes (paper_key, bucket, text, ts)
+       VALUES (?1, ?2, COALESCE(
+         (SELECT text FROM reading_log WHERE paper_key = ?1),
+         (SELECT text FROM last_batch  WHERE paper_key = ?1),
+         ''
+       ), ?3)
+       ON CONFLICT(paper_key) DO UPDATE SET bucket = excluded.bucket, ts = excluded.ts`
+    )
+      .bind(key, bucket, ts)
+      .run();
+  } catch (e) {
+    console.error("[d1] recordVote failed", e);
+  }
+}
+
+/**
+ * Mark a paper as "saved" in the reading_log (Read button → forwarded to
+ * the To Read group). Idempotent.
+ */
+async function recordReadSaved(env, key) {
+  if (!env.DB) {
+    console.error("[d1] DB binding missing; cannot record read_to_group.");
+    return;
+  }
+  const ts = new Date().toISOString();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO reading_log (paper_key, status, status_ts, created_ts)
+       VALUES (?1, 'saved', ?2, ?2)
+       ON CONFLICT(paper_key) DO UPDATE SET status = 'saved', status_ts = excluded.status_ts`
+    )
+      .bind(key, ts)
+      .run();
+  } catch (e) {
+    console.error("[d1] recordReadSaved failed", e);
   }
 }
 

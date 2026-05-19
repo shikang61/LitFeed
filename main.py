@@ -29,11 +29,11 @@ import sys
 import time
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import requests
 
 import recommender
+import state_store
 
 _LATEX2TEXT = None
 
@@ -47,10 +47,6 @@ def latex_to_unicode(text):
         return _LATEX2TEXT.latex_to_text(text)
     except Exception:
         return text
-
-CONFIG_PATH = Path(__file__).parent / "config.json"
-VOTES_PATH = Path(__file__).parent / "votes.json"
-READING_LOG_PATH = Path(__file__).parent / "reading_log.json"
 
 DEFAULT_CATEGORIES = [
     "cs.LG",
@@ -128,71 +124,24 @@ TOPIC_KEYWORDS = {
 
 
 # ---------- config + votes ----------
+#
+# All persistence lives in Cloudflare D1 via ``state_store`` (see
+# ``state_store.py`` and ``docs/architecture.md``). Per-row mutations
+# (votes, reading_log entries, last_update_id) are written in real time
+# through the narrow mutators (record_vote, upsert_paper_log,
+# set_last_update_id, …); the legacy ``save_config`` / ``save_votes`` /
+# ``save_reading_log`` calls below only flush wholesale-replaced state
+# (last_batch table, sent_ids ring buffer). The only file the app writes
+# is ``config.json``, and only when ``categories`` changes (i.e. on /reset).
 
-def load_config():
-    if not CONFIG_PATH.exists():
-        return {
-            "categories": list(DEFAULT_CATEGORIES),
-            "last_update_id": 0,
-            "sent_ids": [],
-        }
-    with CONFIG_PATH.open() as f:
-        cfg = json.load(f)
-    cfg.setdefault("categories", list(DEFAULT_CATEGORIES))
-    cfg.setdefault("last_update_id", 0)
-    cfg.setdefault("sent_ids", [])
-    return cfg
+state_store.set_default_categories(DEFAULT_CATEGORIES)
 
-
-def save_config(cfg):
-    with CONFIG_PATH.open("w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-
-
-def load_votes():
-    if not VOTES_PATH.exists():
-        return {"liked": [], "disliked": [], "last_batch": {}}
-    with VOTES_PATH.open() as f:
-        votes = json.load(f)
-    votes.setdefault("liked", [])
-    votes.setdefault("disliked", [])
-    votes.setdefault("last_batch", {})  # batch number (str) → {"key","text"} for latest run
-    # Migrate older state to compact shape and drop large legacy caches.
-    sent_cache = votes.get("sent_cache", {}) if isinstance(votes.get("sent_cache"), dict) else {}
-    migrated_batch = {}
-    for n, entry in votes["last_batch"].items():
-        if isinstance(entry, dict):
-            migrated_batch[n] = {"key": entry.get("key"), "text": entry.get("text")}
-            continue
-        if isinstance(entry, str):
-            legacy = sent_cache.get(entry, {})
-            migrated_batch[n] = {"key": entry, "text": legacy.get("text")}
-    if migrated_batch:
-        votes["last_batch"] = migrated_batch
-    votes.pop("sent_cache", None)
-    return votes
-
-
-def save_votes(votes):
-    with VOTES_PATH.open("w") as f:
-        json.dump(votes, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-
-def load_reading_log():
-    if not READING_LOG_PATH.exists():
-        return {"papers": {}}
-    with READING_LOG_PATH.open() as f:
-        log = json.load(f)
-    log.setdefault("papers", {})
-    return log
-
-
-def save_reading_log(log):
-    with READING_LOG_PATH.open("w") as f:
-        json.dump(log, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+load_config = state_store.load_config
+save_config = state_store.save_config
+load_votes = state_store.load_votes
+save_votes = state_store.save_votes
+load_reading_log = state_store.load_reading_log
+save_reading_log = state_store.save_reading_log
 
 
 def _now_iso():
@@ -232,6 +181,17 @@ def record_sent_paper(log, paper, score=None):
     )
     entry["sent_ts"] = _now_iso()
     entry.setdefault("status", "sent")
+    state_store.upsert_paper_log(
+        key,
+        title=entry.get("title"),
+        url=entry.get("url"),
+        text=entry.get("text"),
+        categories=entry.get("categories"),
+        score=entry.get("score"),
+        status=entry.get("status"),
+        sent_ts=entry.get("sent_ts"),
+        created_ts=entry.get("created_ts"),
+    )
     return entry
 
 
@@ -239,6 +199,14 @@ def update_reading_status(log, key, text, status, score=None):
     entry = _ensure_paper_log_entry(log, key, text=text, score=score)
     entry["status"] = status
     entry["status_ts"] = _now_iso()
+    state_store.upsert_paper_log(
+        key,
+        text=entry.get("text"),
+        score=entry.get("score"),
+        status=entry.get("status"),
+        status_ts=entry.get("status_ts"),
+        created_ts=entry.get("created_ts"),
+    )
     return entry
 
 
@@ -261,6 +229,11 @@ def store_grok_summary(log, key, text, model):
         "model": model,
         "ts": _now_iso(),
     }
+    state_store.upsert_paper_log(
+        key,
+        grok_summary=entry["grok_summary"],
+        created_ts=entry.get("created_ts"),
+    )
     return entry
 
 
@@ -576,11 +549,9 @@ def _record_vote(votes, key, text, action):
     votes["liked"] = [v for v in votes["liked"] if v["key"] != key]
     votes["disliked"] = [v for v in votes["disliked"] if v["key"] != key]
     bucket = "liked" if action == "like" else "disliked"
-    votes[bucket].append({
-        "key": key,
-        "text": text,
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    })
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    votes[bucket].append({"key": key, "text": text, "ts": ts})
+    state_store.record_vote(key, text, bucket, ts)
 
 
 def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handled=False):
@@ -1330,10 +1301,13 @@ def main():
 
     if newly_sent:
         cfg["sent_ids"] = (cfg["sent_ids"] + newly_sent)[-MAX_SENT_IDS:]
+        # save_config writes the trimmed sent_ids ring buffer (and last_update_id)
+        # to D1; save_votes replaces the last_batch table; per-paper reading_log
+        # entries were already upserted by record_sent_paper above.
         save_config(cfg)
         votes["last_batch"] = last_batch
         save_votes(votes)
-        save_reading_log(reading_log)
+        save_reading_log(reading_log)  # no-op kept for symmetry
         print(f"Sent {len(newly_sent)} messages.")
 
 
