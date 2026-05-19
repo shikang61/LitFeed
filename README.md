@@ -123,6 +123,9 @@ Edit `main.py` defaults or tune knobs:
 ## Local testing
 
 ```bash
+pip install -r requirements-dev.txt
+pytest -q
+
 pip install -r requirements.txt
 export TELEGRAM_TOKEN=...
 export CHAT_ID=...

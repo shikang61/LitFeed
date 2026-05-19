@@ -20,7 +20,7 @@ recommender/ops pass are marked **done** below.
 
 ### Tests
 
-- [ ] pytest coverage for `format_paper`, selection pipeline, `format_weekly_digest`.
+- [x] pytest coverage for `format_paper`, selection pipeline, `format_weekly_digest`.
 - [ ] Mocked D1 client tests for `state_store` mutators.
 - [ ] Worker integration smoke (optional: miniflare + D1 local).
 
