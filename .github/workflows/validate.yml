@@ -1,0 +1,24 @@
+name: Validate workflows
+
+on:
+  push:
+    paths:
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+
+jobs:
+  yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse workflow YAML
+        run: |
+          ruby -ryaml -e '
+            Dir.glob(".github/workflows/*.{yml,yaml}").sort.each do |path|
+              YAML.load_file(path)
+              puts "OK #{path}"
+            end
+          '

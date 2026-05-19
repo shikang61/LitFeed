@@ -49,6 +49,7 @@ _ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = _ROOT / "config.json"
 
 MAX_SENT_IDS = 500
+MAX_VOTES_PER_SIDE = 250
 
 DEFAULT_CATEGORIES: list[str] = []  # populated by main.py at import time
 
@@ -213,6 +214,58 @@ def record_vote(key: str, text: str, bucket: str, ts: str) -> None:
         "  bucket=excluded.bucket, text=excluded.text, ts=excluded.ts",
         [key, bucket, text, ts],
     )
+    prune_votes()
+
+
+def prune_votes(max_per_side: int = MAX_VOTES_PER_SIDE) -> None:
+    """Drop oldest votes beyond ``max_per_side`` per bucket (liked / disliked)."""
+    for bucket in ("liked", "disliked"):
+        _d1.query(
+            "DELETE FROM votes WHERE bucket = ? AND paper_key NOT IN ("
+            "  SELECT paper_key FROM votes WHERE bucket = ? "
+            "  ORDER BY ts DESC LIMIT ?"
+            ")",
+            [bucket, bucket, int(max_per_side)],
+        )
+
+
+def load_category_preferences() -> dict[str, float]:
+    rows = _d1.query("SELECT value FROM kv WHERE key = 'category_preferences'")
+    if not rows:
+        return {}
+    raw = rows[0].get("value") or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items()}
+
+
+def save_category_preferences(prefs: dict[str, float]) -> None:
+    _d1.query(
+        "INSERT INTO kv (key, value) VALUES ('category_preferences', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [json.dumps(prefs, sort_keys=True)],
+    )
+
+
+def bump_category_preferences(
+    prefs: dict[str, float],
+    categories: list[str],
+    *,
+    delta_primary: float,
+    delta_secondary: float = 0.0,
+) -> dict[str, float]:
+    """Update preference weights in place and return the dict."""
+    if not categories:
+        return prefs
+    primary, *rest = categories
+    prefs[primary] = prefs.get(primary, 0.0) + delta_primary
+    for cat in rest:
+        prefs[cat] = prefs.get(cat, 0.0) + (delta_secondary if delta_secondary else delta_primary * 0.25)
+    return prefs
 
 
 def upsert_paper_log(

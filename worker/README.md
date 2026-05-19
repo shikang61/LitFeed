@@ -19,7 +19,9 @@ under a second:
 | **Delete** button     | Worker swaps the keyboard to confirm/cancel — no GitHub round-trip. |
 | **Confirm delete**    | Worker calls `deleteMessage` on the Telegram API directly. |
 | **Cancel**            | Worker restores the vote/Read/Delete keyboard. |
-| `/reset`, `/digest`, `/stats`, `/help` | Worker fires `repository_dispatch`; `process_update.yml` runs `python main.py --apply-update` and commits config.json on `/reset`. |
+| `/stats`, `/help` | Worker reads D1 and replies instantly (no GitHub run). |
+| `/digest` | Worker sends “Generating digest…”, then dispatches; `main.py --apply-update` builds the digest from D1. |
+| `/reset` | Worker dispatches; `process_update.yml` runs `main.py` and may commit `config.json`. |
 
 ## One-time setup
 

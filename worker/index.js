@@ -15,9 +15,9 @@
  *
  *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
  *      .github/workflows/process_update.yml using `python main.py --apply-update`):
- *      - All /commands (e.g. /reset, /digest, /stats, /help)
- *        These mutate config.json or trigger Telegram message sends, so they
- *        still run inside main.py.
+ *      - /stats, /help — answered here (D1 reads + sendMessage).
+ *      - /digest — instant ack here, then dispatch; full digest from main.py.
+ *      - /reset — dispatch only (mutates config.json in GitHub Actions).
  *
  * Required Worker secrets (set via `wrangler secret put NAME`):
  *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
@@ -34,6 +34,8 @@
  */
 
 const TG_API = "https://api.telegram.org";
+const MIN_VOTES_PER_SIDE = 10;
+const MAX_VOTES_PER_SIDE = 250;
 
 export default {
   async fetch(request, env, ctx) {
@@ -69,7 +71,24 @@ export default {
       if (handled) return new Response("OK");
     }
 
-    // Fall-through: dispatch to GitHub for stateful processing.
+    const msg = update.message || update.edited_message;
+    if (msg?.text?.startsWith("/")) {
+      const cmd = msg.text.trim().split(/\s+/)[0].toLowerCase();
+      if (cmd === "/stats" || cmd === "/help") {
+        ctx.waitUntil(handleOwnerCommand(cmd, env));
+        return new Response("OK");
+      }
+      if (cmd === "/digest") {
+        await tg(env, "sendMessage", {
+          chat_id: env.CHAT_ID,
+          text: "Generating digest…",
+        });
+        ctx.waitUntil(dispatchToGitHub(env, update, false));
+        return new Response("OK");
+      }
+    }
+
+    // Fall-through: dispatch to GitHub (/reset, unknown commands, legacy paths).
     ctx.waitUntil(dispatchToGitHub(env, update, false));
     return new Response("OK");
   },
@@ -85,7 +104,11 @@ async function handleCallback(cb, update, env, ctx) {
     const toast = action === "like" ? "Recorded 👍" : "Recorded 👎";
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: toast });
     // Write the vote directly to D1; no GitHub round-trip.
-    ctx.waitUntil(recordVote(env, key, action === "like" ? "liked" : "disliked"));
+    ctx.waitUntil(
+      recordVote(env, key, action === "like" ? "liked" : "disliked").then(() =>
+        bumpCategoryPrefsFromVote(env, key, action === "like" ? "liked" : "disliked")
+      )
+    );
     return true;
   }
 
@@ -160,7 +183,9 @@ async function handleCallback(cb, update, env, ctx) {
     }
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Forwarded to To Read." });
     // Mark the paper as "saved" in D1; no GitHub round-trip.
-    ctx.waitUntil(recordReadSaved(env, key));
+    ctx.waitUntil(
+      recordReadSaved(env, key).then(() => bumpCategoryPrefsFromRead(env, key))
+    );
     return true;
   }
 
@@ -217,8 +242,25 @@ async function recordVote(env, key, bucket) {
     )
       .bind(key, bucket, ts)
       .run();
+    await pruneVotes(env, "liked");
+    await pruneVotes(env, "disliked");
   } catch (e) {
     console.error("[d1] recordVote failed", e);
+  }
+}
+
+async function pruneVotes(env, bucket) {
+  try {
+    await env.DB.prepare(
+      `DELETE FROM votes WHERE bucket = ?1 AND paper_key NOT IN (
+         SELECT paper_key FROM votes WHERE bucket = ?1
+         ORDER BY ts DESC LIMIT ?2
+       )`
+    )
+      .bind(bucket, bucket, MAX_VOTES_PER_SIDE)
+      .run();
+  } catch (e) {
+    console.error("[d1] pruneVotes failed", e);
   }
 }
 
@@ -298,4 +340,148 @@ function deleteConfirmKeyboard(key) {
       ],
     ],
   };
+}
+
+async function handleOwnerCommand(cmd, env) {
+  if (cmd === "/help") {
+    await sendHelp(env);
+    return;
+  }
+  if (cmd === "/stats") {
+    await sendStats(env);
+  }
+}
+
+async function sendHelp(env) {
+  const text =
+    "*Commands*\n" +
+    "/reset — restore default categories\n" +
+    "/digest — send a weekly-style reading digest now\n" +
+    "/stats — vote counts + filter status\n" +
+    "/help — this message\n\n" +
+    "_Vote and triage with the buttons under each paper:_ " +
+    "👍 / 👎 / Read / Delete.";
+  await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text, parse_mode: "Markdown" });
+}
+
+async function sendStats(env) {
+  if (!env.DB) {
+    await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text: "D1 binding missing." });
+    return;
+  }
+  try {
+    const liked = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM votes WHERE bucket = 'liked'"
+    ).first();
+    const disliked = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM votes WHERE bucket = 'disliked'"
+    ).first();
+    const nl = Number(liked?.n ?? 0);
+    const nd = Number(disliked?.n ?? 0);
+    const active = nl >= MIN_VOTES_PER_SIDE && nd >= MIN_VOTES_PER_SIDE;
+    const status = active ? "active" : `cold start (need ≥${MIN_VOTES_PER_SIDE} each)`;
+
+    const statusRows = await env.DB.prepare(
+      "SELECT status, COUNT(*) AS n FROM reading_log GROUP BY status"
+    ).all();
+    const counts = {};
+    for (const row of statusRows.results || []) {
+      counts[row.status || "sent"] = Number(row.n ?? 0);
+    }
+
+    const prefs = await loadCategoryPreferences(env);
+    let prefLine = "";
+    if (Object.keys(prefs).length) {
+      const top = Object.entries(prefs)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([cat, val]) => `\`${cat}\` (${val >= 0 ? "+" : ""}${val.toFixed(1)})`)
+        .join(", ");
+      prefLine = `\n*Category lean:* ${top}\n`;
+    }
+
+    const text =
+      `*Votes*\n👍 ${nl}\n👎 ${nd}\n` +
+      `_Capped at ${MAX_VOTES_PER_SIDE} per side (oldest dropped)._\n\n` +
+      `*Filter:* ${status}\n` +
+      `*Scoring:* TF-IDF + embeddings\n\n` +
+      `*Reading*\n` +
+      `Saved: ${counts.saved ?? 0}\n` +
+      `Read: ${counts.read ?? 0}\n` +
+      `Skipped: ${counts.skipped ?? 0}\n` +
+      prefLine;
+    await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text, parse_mode: "Markdown" });
+  } catch (e) {
+    console.error("[d1] sendStats failed", e);
+    await tg(env, "sendMessage", {
+      chat_id: env.CHAT_ID,
+      text: "Could not load stats from D1.",
+    });
+  }
+}
+
+async function loadCategoryPreferences(env) {
+  const row = await env.DB.prepare(
+    "SELECT value FROM kv WHERE key = 'category_preferences'"
+  ).first();
+  if (!row?.value) return {};
+  try {
+    const data = JSON.parse(row.value);
+    return typeof data === "object" && data !== null ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveCategoryPreferences(env, prefs) {
+  await env.DB.prepare(
+    "INSERT INTO kv (key, value) VALUES ('category_preferences', ?1) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  )
+    .bind(JSON.stringify(prefs))
+    .run();
+}
+
+async function categoriesForKey(env, key) {
+  const row = await env.DB.prepare(
+    "SELECT categories FROM reading_log WHERE paper_key = ?1"
+  )
+    .bind(key)
+    .first();
+  if (!row?.categories) return [];
+  try {
+    const parsed = JSON.parse(row.categories);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function bumpPrefs(prefs, categories, deltaPrimary, deltaSecondary) {
+  if (!categories.length) return prefs;
+  const [primary, ...rest] = categories;
+  prefs[primary] = (prefs[primary] ?? 0) + deltaPrimary;
+  const secondary = deltaSecondary !== undefined ? deltaSecondary : deltaPrimary * 0.25;
+  for (const cat of rest) {
+    prefs[cat] = (prefs[cat] ?? 0) + secondary;
+  }
+  return prefs;
+}
+
+async function bumpCategoryPrefsFromVote(env, key, bucket) {
+  const cats = await categoriesForKey(env, key);
+  const prefs = await loadCategoryPreferences(env);
+  if (bucket === "liked") {
+    bumpPrefs(prefs, cats, 1.0, 0.25);
+  } else {
+    bumpPrefs(prefs, cats, -0.5, -0.15);
+  }
+  await saveCategoryPreferences(env, prefs);
+}
+
+async function bumpCategoryPrefsFromRead(env, key) {
+  const cats = await categoriesForKey(env, key);
+  const prefs = await loadCategoryPreferences(env);
+  bumpPrefs(prefs, cats, 0.5, 0.15);
+  await saveCategoryPreferences(env, prefs);
 }

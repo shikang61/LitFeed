@@ -252,7 +252,20 @@ And in `recommender.py`'s `TfidfVectorizer` call:
 | `max_df`       | `0.95`    | Lowering drops more generic terms.                                   |
 | `sublinear_tf` | `True`    | Off → raw tf; runaway frequencies in long abstracts will dominate.   |
 
-## 7. If you want to improve it
+## 7. Current production extensions (May 2026)
+
+Implemented in `recommender.fit_profile` / `score_profile` and `main.py`:
+
+| Feature | Behavior |
+|---------|----------|
+| Read signal | `status=saved` papers join the liked corpus at `READ_SIGNAL_WEIGHT` (1.5×). |
+| Per-category models | TF-IDF + embedding centroids per primary category when ≥2 docs on a side. |
+| Category preferences | D1 `kv.category_preferences` nudges scores via `CATEGORY_PREF_ALPHA`. |
+| Blended scoring | `TFIDF_BLEND` (default 0.5) mixes TF-IDF and `all-MiniLM-L6-v2`; set `LITFEED_DISABLE_EMBEDDINGS=1` to skip embeddings. |
+| Negative serendipity | `THEME_WEEKLY_CAP` (3) per inferred theme over `THEME_LOOKBACK_DAYS` (7). |
+| Vote cap | Oldest votes dropped beyond `MAX_VOTES_PER_SIDE` (250) per bucket. |
+
+## 8. If you want to improve it
 
 Concrete directions, ordered by effort:
 
@@ -302,7 +315,7 @@ For any of these, the cleanest entry point is `recommender.py::fit` /
 `score` — keep the interface, swap the implementation, and the selection
 pipeline doesn't need to know anything changed.
 
-## 8. Debugging
+## 9. Debugging
 
 ```bash
 # Print the current model state (requires CF_* env vars)

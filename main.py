@@ -93,6 +93,11 @@ RECENCY_HALF_LIFE_DAYS = 45
 EARLY_ACTIVE_EXTRA_VOTES = 5
 EARLY_ACTIVE_RELEVANCE_FLOOR = -0.03
 DIVERSITY_MAX_JACCARD = 0.85
+READ_SIGNAL_WEIGHT = 1.5  # saved (Read) papers in the liked corpus
+THEME_WEEKLY_CAP = 3
+THEME_LOOKBACK_DAYS = 7
+CATEGORY_PREF_ALPHA = 0.08
+TFIDF_BLEND = 0.5
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 PRIORITY_CATEGORIES = {
@@ -395,14 +400,29 @@ def _format_stats(votes, reading_log):
     status = "active" if active else f"cold start (need ≥{MIN_VOTES_PER_SIDE} each)"
     reading_counts = reading_status_counts(reading_log)
     topics = format_topic_summary(reading_log)
+    prefs = state_store.load_category_preferences()
+    pref_line = ""
+    if prefs:
+        top = sorted(prefs.items(), key=lambda item: (-item[1], item[0]))[:5]
+        pref_line = "\n*Category lean:* " + ", ".join(
+            f"`{escape_markdown(cat)}` ({val:+.1f})" for cat, val in top
+        ) + "\n"
+    embed_note = "off" if os.environ.get("LITFEED_DISABLE_EMBEDDINGS", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) else "on"
     return (
-        f"*Votes*\n👍 {nl}\n👎 {nd}\n\n"
-        f"*Filter:* {status}\n\n"
+        f"*Votes*\n👍 {nl}\n👎 {nd}\n"
+        f"_Capped at {state_store.MAX_VOTES_PER_SIDE} per side (oldest dropped)._\n\n"
+        f"*Filter:* {status}\n"
+        f"*Scoring:* TF-IDF + embeddings ({embed_note})\n\n"
         f"*Reading*\n"
         f"Saved: {reading_counts.get('saved', 0)}\n"
         f"Read: {reading_counts.get('read', 0)}\n"
         f"Skipped: {reading_counts.get('skipped', 0)}\n\n"
         f"*Topics:* {topics}"
+        f"{pref_line}"
     )
 
 
@@ -453,6 +473,7 @@ def _sorted_papers(reading_log):
 
 
 def format_weekly_digest(votes, reading_log):
+    """Weekly digest from D1-backed ``reading_log`` (no JSON vote files)."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=7)
     recent = []
@@ -504,7 +525,37 @@ def format_weekly_digest(votes, reading_log):
 
 # ---------- votes ----------
 
-def _record_vote(votes, key, text, action):
+def _primary_category_from_log(reading_log, key):
+    entry = reading_log.get("papers", {}).get(key, {})
+    cats = entry.get("categories") or []
+    return cats[0] if cats else "_global"
+
+
+def _primary_category_from_paper(paper):
+    if paper.primary_category:
+        return paper.primary_category
+    return paper.categories[0] if paper.categories else "_global"
+
+
+def _categories_for_key(reading_log, key):
+    entry = reading_log.get("papers", {}).get(key, {})
+    return list(entry.get("categories") or [])
+
+
+def normalized_category_bonus(category_prefs, category):
+    if not category_prefs or category in ("", "_global"):
+        return 0.0
+    vals = list(category_prefs.values())
+    if not vals:
+        return 0.0
+    raw = category_prefs.get(category, 0.0)
+    span = max(max(vals), min(vals), 1.0)
+    if span == 0:
+        return 0.0
+    return CATEGORY_PREF_ALPHA * (raw / span)
+
+
+def _record_vote(votes, key, text, action, reading_log=None):
     """Move a paper into the liked/disliked bucket, replacing any prior vote."""
     votes["liked"] = [v for v in votes["liked"] if v["key"] != key]
     votes["disliked"] = [v for v in votes["disliked"] if v["key"] != key]
@@ -512,6 +563,15 @@ def _record_vote(votes, key, text, action):
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     votes[bucket].append({"key": key, "text": text, "ts": ts})
     state_store.record_vote(key, text, bucket, ts)
+
+    if reading_log is not None:
+        cats = _categories_for_key(reading_log, key)
+        prefs = state_store.load_category_preferences()
+        if action == "like":
+            state_store.bump_category_preferences(prefs, cats, delta_primary=1.0, delta_secondary=0.25)
+        else:
+            state_store.bump_category_preferences(prefs, cats, delta_primary=-0.5, delta_secondary=-0.15)
+        state_store.save_category_preferences(prefs)
 
 
 def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handled=False):
@@ -543,6 +603,12 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
         if webhook_handled:
             if text_value:
                 update_reading_status(reading_log, key, text_value, "saved")
+                cats = _categories_for_key(reading_log, key)
+                prefs = state_store.load_category_preferences()
+                state_store.bump_category_preferences(
+                    prefs, cats, delta_primary=0.5, delta_secondary=0.15
+                )
+                state_store.save_category_preferences(prefs)
             return False, bool(text_value)
         target_chat_id = os.environ.get("LITFEED_TO_READ_CHAT_ID")
         if not target_chat_id:
@@ -563,6 +629,12 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
 
         if text_value:
             update_reading_status(reading_log, key, text_value, "saved")
+            cats = _categories_for_key(reading_log, key)
+            prefs = state_store.load_category_preferences()
+            state_store.bump_category_preferences(
+                prefs, cats, delta_primary=0.5, delta_secondary=0.15
+            )
+            state_store.save_category_preferences(prefs)
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Forwarded to To Read.")
         return False, bool(text_value)
 
@@ -599,7 +671,7 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
             )
         return False, False
 
-    _record_vote(votes, key, text_value, action)
+    _record_vote(votes, key, text_value, action, reading_log=reading_log)
     if not webhook_handled:
         toast = f"Recorded {'👍' if action == 'like' else '👎'}"
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text=toast)
@@ -976,16 +1048,113 @@ def vote_recency_weight(vote, now):
     return 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
 
 
-def build_model(votes):
+def build_training_entries(votes, reading_log):
+    """Liked/disliked training rows for :func:`recommender.fit_profile`."""
     now = datetime.now(timezone.utc)
-    liked = votes["liked"]
-    disliked = votes["disliked"]
-    return recommender.fit(
-        [v["text"] for v in liked],
-        [v["text"] for v in disliked],
-        liked_weights=[vote_recency_weight(v, now) for v in liked],
-        disliked_weights=[vote_recency_weight(v, now) for v in disliked],
+    liked_keys = {v["key"] for v in votes["liked"]}
+    disliked_keys = {v["key"] for v in votes["disliked"]}
+
+    liked_entries = []
+    for vote in votes["liked"]:
+        liked_entries.append(
+            {
+                "text": vote["text"],
+                "weight": vote_recency_weight(vote, now),
+                "category": _primary_category_from_log(reading_log, vote["key"]),
+            }
+        )
+
+    for entry in reading_log.get("papers", {}).values():
+        if entry.get("status") != "saved" or not entry.get("text"):
+            continue
+        key = entry.get("key")
+        if not key or key in disliked_keys:
+            continue
+        if key in liked_keys:
+            continue
+        ts_vote = {"ts": entry.get("status_ts") or entry.get("sent_ts")}
+        liked_entries.append(
+            {
+                "text": entry["text"],
+                "weight": READ_SIGNAL_WEIGHT * vote_recency_weight(ts_vote, now),
+                "category": _primary_category_from_log(reading_log, key),
+            }
+        )
+
+    disliked_entries = [
+        {
+            "text": vote["text"],
+            "weight": vote_recency_weight(vote, now),
+            "category": _primary_category_from_log(reading_log, vote["key"]),
+        }
+        for vote in votes["disliked"]
+    ]
+    return liked_entries, disliked_entries
+
+
+def build_profile(votes, reading_log):
+    liked_entries, disliked_entries = build_training_entries(votes, reading_log)
+    return recommender.fit_profile(
+        liked_entries,
+        disliked_entries,
+        tfidf_blend=TFIDF_BLEND,
     )
+
+
+def score_paper(paper, profile, category_prefs):
+    text = paper_text(paper)
+    category = _primary_category_from_paper(paper)
+    bonus = normalized_category_bonus(category_prefs, category)
+    return recommender.score_profile(text, category, profile, category_pref_bonus=bonus)
+
+
+def score_text_with_profile(text, categories, profile, category_prefs):
+    category = categories[0] if categories else "_global"
+    bonus = normalized_category_bonus(category_prefs, category)
+    return recommender.score_profile(text, category, profile, category_pref_bonus=bonus)
+
+
+def recent_theme_counts(reading_log, days):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    counts = {}
+    for entry in reading_log.get("papers", {}).values():
+        ts_str = entry.get("sent_ts") or entry.get("created_ts")
+        if not ts_str:
+            continue
+        try:
+            parsed = datetime.fromisoformat(ts_str)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if parsed < cutoff:
+            continue
+        blob = f"{entry.get('title', '')}\n{entry.get('text', '')}"
+        for topic in infer_topics(blob):
+            counts[topic] = counts.get(topic, 0) + 1
+    return counts
+
+
+def apply_theme_weekly_cap(papers, reading_log):
+    """Drop papers that would exceed per-theme weekly send cap."""
+    counts = recent_theme_counts(reading_log, THEME_LOOKBACK_DAYS)
+    kept = []
+    batch_add = {}
+    for paper in papers:
+        topics = infer_topics(paper_text(paper))
+        if topics and any(
+            counts.get(topic, 0) + batch_add.get(topic, 0) >= THEME_WEEKLY_CAP for topic in topics
+        ):
+            continue
+        kept.append(paper)
+        for topic in topics:
+            batch_add[topic] = batch_add.get(topic, 0) + 1
+    if len(kept) < len(papers):
+        print(
+            f"Theme weekly cap ({THEME_WEEKLY_CAP}/{THEME_LOOKBACK_DAYS}d): "
+            f"{len(papers)} → {len(kept)} papers."
+        )
+    return kept
 
 
 def current_relevance_floor(votes):
@@ -1104,11 +1273,17 @@ def choose_deep_read_candidate(votes, reading_log):
     if not candidates:
         return None
 
-    model = build_model(votes) if filter_active(votes) else None
+    profile = build_profile(votes, reading_log) if filter_active(votes) else None
+    category_prefs = state_store.load_category_preferences()
     scored = []
     for entry in candidates:
-        if model is not None:
-            score_value = recommender.score(entry["text"], model)
+        if profile is not None:
+            score_value = score_text_with_profile(
+                entry["text"],
+                entry.get("categories") or [],
+                profile,
+                category_prefs,
+            )
         else:
             score_value = float(entry.get("score", 0.0) or 0.0)
         status_bonus = 0.25 if entry.get("status") == "saved" else 0.0
@@ -1228,10 +1403,12 @@ def main():
     fresh = [p for p in papers if paper_key(p) not in sent_ids]
     score_by_key = {}
 
+    category_prefs = state_store.load_category_preferences()
+
     if filter_active(votes):
-        model = build_model(votes)
+        profile = build_profile(votes, reading_log)
         floor = current_relevance_floor(votes)
-        scored = [(p, recommender.score(paper_text(p), model)) for p in fresh]
+        scored = [(p, score_paper(p, profile, category_prefs)) for p in fresh]
         # Primary objective: personal relevance. Secondary: freshness.
         scored.sort(key=lambda ps: (ps[1], ps[0].published), reverse=True)
         scored = apply_diversity_guardrail(scored, DIVERSITY_MAX_JACCARD)
@@ -1261,6 +1438,9 @@ def main():
         print(f"Capped per-category ({PER_CATEGORY_LIMIT}): {before_cap} → {len(to_send)}.")
     else:
         print("Per-category cap disabled: best papers win globally.")
+
+    before_theme_cap = len(to_send)
+    to_send = apply_theme_weekly_cap(to_send, reading_log)
 
     before_priority_mix = len(to_send)
     to_send = select_priority_mix(to_send, MAX_PAPERS_PER_RUN, PRIORITY_PAPERS_PER_RUN)
