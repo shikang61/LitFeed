@@ -2,8 +2,8 @@
 
 All runtime state lives in Cloudflare D1 (SQLite at the edge) — votes,
 reading_log, sent_ids, last_batch, and small `kv` scalars. The only
-thing left in the repo is `config.json`, which holds the user-editable
-``categories`` list and nothing else.
+optional ``config.json`` (live category overrides; often created on GitHub by
+``/reset``). The seed list lives in ``shared/default_categories.json`` only.
 
 D1 is mandatory: the three env vars below must be set or load/save will
 raise :class:`_d1.D1Error` on the first call. This is intentional — there's
@@ -48,17 +48,41 @@ import _d1
 
 _ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = _ROOT / "config.json"
+SEED_CATEGORIES_PATH = _ROOT / "shared" / "default_categories.json"
 
 MAX_SENT_IDS = 500
 MAX_VOTES_PER_SIDE = 250
 
-DEFAULT_CATEGORIES: list[str] = []  # populated by main.py at import time
+DEFAULT_CATEGORIES: list[str] = []  # cache filled by :func:`_seed_categories`
+_seed_categories_cache: list[str] | None = None
 
 
 def set_default_categories(categories: Iterable[str]) -> None:
-    """Used by :mod:`main` to register the bootstrap category list."""
-    global DEFAULT_CATEGORIES
+    """Override seed categories (tests only; production uses ``shared/default_categories.json``)."""
+    global DEFAULT_CATEGORIES, _seed_categories_cache
     DEFAULT_CATEGORIES = list(categories)
+    _seed_categories_cache = list(categories)
+
+
+def _seed_categories() -> list[str]:
+    """Bootstrap category list from ``shared/default_categories.json``."""
+    global DEFAULT_CATEGORIES, _seed_categories_cache
+    if _seed_categories_cache is not None:
+        return _seed_categories_cache
+    if DEFAULT_CATEGORIES:
+        _seed_categories_cache = list(DEFAULT_CATEGORIES)
+        return _seed_categories_cache
+    try:
+        with SEED_CATEGORIES_PATH.open(encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, list):
+            raise ValueError("expected a JSON array")
+        _seed_categories_cache = [str(c) for c in loaded]
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"[state_store] failed to read {SEED_CATEGORIES_PATH}: {exc}", file=sys.stderr)
+        _seed_categories_cache = []
+    DEFAULT_CATEGORIES = _seed_categories_cache
+    return _seed_categories_cache
 
 
 # ---------------------------------------------------------------- config.json (categories only)
@@ -88,11 +112,12 @@ def _dump_config_file(categories: list[str]) -> None:
 def load_config() -> dict[str, Any]:
     """Return ``{categories, last_update_id, sent_ids}``.
 
-    ``categories`` comes from ``config.json`` (or :data:`DEFAULT_CATEGORIES`
-    when the file hasn't been seeded). The other two come from D1.
+    ``categories`` come from ``config.json`` when present, else
+    :func:`_seed_categories` (``shared/default_categories.json``).
+    The other fields come from D1.
     """
     file_cfg = _load_config_file()
-    categories = file_cfg.get("categories") or list(DEFAULT_CATEGORIES)
+    categories = file_cfg.get("categories") or _seed_categories()
     return {
         "categories": list(categories),
         "last_update_id": _d1_get_last_update_id(),
@@ -173,7 +198,7 @@ def save_config(cfg: dict[str, Any]) -> None:
     that don't touch categories produce no commit-worthy diff).
     ``last_update_id`` and ``sent_ids`` go to D1.
     """
-    new_categories = list(cfg.get("categories", []) or DEFAULT_CATEGORIES)
+    new_categories = list(cfg.get("categories", []) or _seed_categories())
     existing = _load_config_file().get("categories")
     if existing != new_categories:
         _dump_config_file(new_categories)

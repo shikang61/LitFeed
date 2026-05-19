@@ -39,11 +39,6 @@ def latex_to_unicode(text):
     except Exception:
         return text
 
-with (Path(__file__).resolve().parent / "shared" / "default_categories.json").open(
-    encoding="utf-8"
-) as _default_categories_file:
-    DEFAULT_CATEGORIES = json.load(_default_categories_file)
-
 LOOKBACK_HOURS = 36
 ARXIV_RSS_URL = "https://rss.arxiv.org/rss/{category}"
 ARXIV_MAX_ATTEMPTS = 4
@@ -100,10 +95,8 @@ with (Path(__file__).resolve().parent / "shared" / "topic_keywords.json").open(
 # ``state_store.py`` and ``docs/architecture.md``). Per-row mutations
 # Per-row mutations go through narrow mutators (record_vote, upsert_paper_log,
 # …). ``save_config`` / ``save_votes`` flush wholesale-replaced state.
-# ``config.json`` holds categories; /reset and confirmed /clear update it via
-# the Worker's GitHub Contents API (not from Python).
-
-state_store.set_default_categories(DEFAULT_CATEGORIES)
+# Live categories: optional ``config.json`` (Worker writes on /reset via GitHub API).
+# Seed list: ``shared/default_categories.json`` only.
 
 load_config = state_store.load_config
 save_config = state_store.save_config

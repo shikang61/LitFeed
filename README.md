@@ -110,7 +110,7 @@ Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ign
 ## Customising via code
 
 Edit `main.py` defaults or tune knobs:
-- `shared/default_categories.json` — category list applied on `/reset` and `/clear`.
+- `shared/default_categories.json` — **only** copy of the default category list (`/reset` / `/clear`). Optional `config.json` (gitignored locally) holds live overrides when present; the Worker may create it on GitHub after `/reset`.
 - `LOOKBACK_HOURS` — fetch window (default 36h).
 - `TELEGRAM_SAFE_MESSAGE_CHARS` — safety cap for paper messages; abstracts are otherwise shown in full.
 - `GROK_DEFAULT_MODEL` — default xAI model for paper summaries.

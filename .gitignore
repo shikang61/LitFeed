@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 
+# Optional local override; seed list is shared/default_categories.json.
+# Worker may commit config.json on GitHub after /reset — do not duplicate the seed here.
+config.json
+
 # Cloudflare Worker
 worker/node_modules/
 worker/.wrangler/

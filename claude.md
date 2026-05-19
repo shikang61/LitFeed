@@ -13,7 +13,8 @@ to Telegram with vote buttons. It runs unattended on GitHub Actions.
  in titles/abstracts)
 * **Automation:** GitHub Actions (daily, weekly, on-demand webhook)
 * **State:** Cloudflare D1 (SQLite at the edge) for all runtime state;
- `config.json` in git for the static `categories` list. The D1 cutover
+ `shared/default_categories.json` for the seed category list; optional
+ `config.json` for live overrides (Worker-written on `/reset`). The D1 cutover
  history lives in `docs/d1_migration.md`; the day-to-day abstraction
  layer is `state_store.py`.
 * **Delivery:** Telegram Bot API via a Cloudflare Worker webhook
@@ -97,10 +98,10 @@ D1 tables (see `migrations/0001_init.sql`):
 * `kv(key PK, value)` — small scalars (`category_preferences`, legacy
   `last_update_id` from the old getUpdates poll).
 
-`config.json` keeps **only** the user-edited `categories` list, version-
-controlled in git. `shared/default_categories.json` is the seed list for
-`/reset` and `/clear`. The Worker updates `config.json` via the GitHub
-Contents API; daily runs read whatever is checked out in the repo.
+`shared/default_categories.json` is the **only** seed list (used when
+`config.json` is absent). `/reset` and `/clear` write live categories to
+`config.json` via the Worker's GitHub Contents API; daily runs prefer that
+file when checked out, otherwise fall back to the seed file.
 
 ### Local dev
 

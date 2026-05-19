@@ -50,7 +50,7 @@ Worker.
 
 | State                         | Storage                       | Mutated by                                     |
 |-------------------------------|-------------------------------|------------------------------------------------|
-| `categories`                  | `config.json` (in git)        | Worker `/reset`, `/clear` (GitHub Contents API)  |
+| `categories`                  | `config.json` on GitHub (optional; seed in `shared/default_categories.json`) | Worker `/reset`, `/clear` (GitHub Contents API)  |
 | Category preference lean      | D1 `kv.category_preferences`  | Worker (votes, Read)                             |
 | Liked / disliked papers       | D1 `votes`                    | Worker (`v:like`, `v:dislike`)                 |
 | Reading log (sent + saved)    | D1 `reading_log`              | `main.py` (sends), Worker (`Read` button)      |
