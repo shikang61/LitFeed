@@ -24,6 +24,9 @@ state files. The webhook is optional — if you skip the Worker, re-enable the
 cron in `poll_commands.yml` and unset `LITFEED_DISABLE_POLL` on the other
 workflows to fall back to 5-minute `getUpdates` polling.
 
+For a deeper walkthrough of the request flow, why each path exists, and the
+infrastructure under the hood, see [`docs/architecture.md`](docs/architecture.md).
+
 ## Setup
 
 ### 1. Create a Telegram bot

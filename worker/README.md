@@ -3,6 +3,10 @@
 A tiny Telegram webhook receiver that powers instant button reactions for the
 LitFeed bot. Replaces the 5-minute `getUpdates` poll on GitHub Actions.
 
+For an end-to-end walkthrough of how this Worker plugs into GitHub Actions and
+why the request flow is split into instant vs. dispatched paths, see
+[`../docs/architecture.md`](../docs/architecture.md).
+
 ## What this Worker does
 
 When you tap a button on a paper alert in Telegram, the update arrives here in
