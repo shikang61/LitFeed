@@ -43,7 +43,7 @@ const CLEAR_CONFIRM_TEXT =
   "Categories will reset to defaults. The recommender goes back to cold start.\n\n" +
   "_This cannot be undone._";
 
-// Keep in sync with TOPIC_KEYWORDS in main.py (used by /stats and weekly digest).
+// Keep in sync with TOPIC_KEYWORDS in main.py (weekly digest topic labels).
 const TOPIC_KEYWORDS = {
   plasma: ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
   "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],

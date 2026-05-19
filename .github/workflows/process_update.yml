@@ -1,8 +1,8 @@
 name: Process Telegram Update
 
 # Triggered by the Cloudflare Worker via repository_dispatch when a Telegram
-# update needs server-side state mutation (commands, votes, reading-log writes).
-# The Worker handles instant Telegram-side actions itself.
+# update needs server-side state mutation (/digest, /reset, /clear confirm).
+# Votes, Read, Delete, /stats, /help, and /clear prompt are handled in the Worker.
 
 on:
   repository_dispatch:
@@ -44,8 +44,6 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           LITFEED_TO_READ_CHAT_ID: ${{ secrets.LITFEED_TO_READ_CHAT_ID }}
           LITFEED_UPDATE_JSON: ${{ toJSON(github.event.client_payload.update) }}
-          LITFEED_WEBHOOK_HANDLED: ${{ github.event.client_payload.webhook_handled }}
-          LITFEED_DISABLE_POLL: "1"
           # Cloudflare D1 (runtime state).
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}

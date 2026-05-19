@@ -79,7 +79,7 @@ set `LITFEED_DISABLE_POLL=1` to skip the polling step.
 
 ## Customising via Telegram
 
-Voting and triage are done with the inline buttons under each paper alert (see *Reading habit loop* below). Configuration commands are sent directly to the bot and processed by the next workflow run (instant via the Cloudflare Worker; otherwise on the next 5-minute poll cycle).
+Voting and triage are done with the inline buttons under each paper alert (see *Reading habit loop* below). `/stats`, `/help`, `/clear`, votes, Read, and Delete are answered instantly by the Cloudflare Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions via `process_update.yml`.
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|

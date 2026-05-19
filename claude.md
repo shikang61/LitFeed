@@ -20,13 +20,12 @@ to Telegram with vote buttons. It runs unattended on GitHub Actions.
 
 ## How It Works
 
-A run (`python main.py`) does two things in order:
+A daily run (`python main.py`) fetches, filters, and alerts. Telegram commands
+and button callbacks are handled by the Cloudflare Worker; `main.py
+--apply-update` handles Worker-dispatched updates only (`/digest`, `/reset`,
+confirmed `/clear`).
 
-1. **Process Telegram updates** (legacy `getUpdates` poll; in production this
-   is skipped via `LITFEED_DISABLE_POLL=1` because the Cloudflare Worker
-   is the webhook consumer). `main.py --apply-update` handles one update
-   delivered by the Worker via `repository_dispatch`.
-2. **Fetch, filter, alert** (skipped under `--commands-only`):
+**Fetch, filter, alert** (skipped under `--weekly-digest`):
    * Fetch papers from each category's RSS feed at
      `https://rss.arxiv.org/rss/<category>`. RSS is a separate cached host with
      looser rate limits than the legacy `export.arxiv.org` API, which now
@@ -60,17 +59,16 @@ changing scoring behavior.
 
 ## Telegram Commands (owner only)
 
-`/reset`, `/digest`, `/stats`, `/help`. Non-owner senders
-are ignored.
+`/reset`, `/digest`, `/clear`, `/stats`, `/help`. Non-owner senders are ignored.
+`/stats`, `/help`, `/clear` (prompt), votes, Read, and Delete are handled in
+the Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions
+via `main.py --apply-update`.
 
 Voting and triage are button-only. Each paper alert carries an inline keyboard
 with 👍 Like / 👎 Dislike (`v:like:<key>` / `v:dislike:<key>` callbacks),
 Read (forwards to the To Read group, `h:read_to_group:<key>`), and Delete
-(`h:delete:<key>` → confirm/cancel). The Cloudflare Worker answers each
-callback instantly with a toast and writes vote / read-saved upserts to D1
-directly. Only `/commands` (which build multi-line Markdown replies) are
-forwarded to GitHub via `repository_dispatch` so `main.py --apply-update`
-can compose them. Each paper alert carries the recommender's relevance
+(`h:delete:<key>` → confirm/cancel). The Worker answers each callback instantly
+and writes vote / read-saved upserts to D1 directly. Each paper alert carries the recommender's relevance
 score (or `-` during cold start) directly in the message header.
 
 ## State
@@ -117,18 +115,13 @@ escape hatches were retired in Phase F.
 
 * `daily_papers.yml` — full run. Triggered by `repository_dispatch`
  (`run-paper-alerter`, fired by cron-job.org) and `workflow_dispatch`.
- Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars. Sets
- `LITFEED_DISABLE_POLL=1` so it skips `getUpdates` (the Cloudflare Worker
- webhook is the consumer).
+ Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
 * `process_update.yml` — triggered by `repository_dispatch` event type
  `telegram-update`, fired by the Cloudflare Worker (`worker/index.js`) for
- updates that need the full Python environment (today: `/commands` only;
- the Worker writes votes/reads to D1 directly). Runs `python main.py
- --apply-update`, reading the update payload from `LITFEED_UPDATE_JSON` and
- the `LITFEED_WEBHOOK_HANDLED` flag from the dispatch `client_payload`.
-* `poll_commands.yml` — legacy fallback. Cron is commented out; only
- `workflow_dispatch` remains. Re-enable the cron and remove
- `LITFEED_DISABLE_POLL` if you delete the webhook.
+ `/digest`, `/reset`, and confirmed `/clear` (the Worker handles votes, Read,
+ Delete, `/stats`, `/help`, and the `/clear` prompt directly). Runs
+ `python main.py --apply-update` with the update in `LITFEED_UPDATE_JSON`.
+* `poll_commands.yml` — deprecated stub (`--commands-only` is a no-op).
 * `weekly_digest.yml` — Sunday 18:00 UTC, `python main.py --weekly-digest`.
 
 `daily_papers.yml` and `weekly_digest.yml` are pure read+D1-write
@@ -147,11 +140,10 @@ around those bot commits.
  `votes` table; `h:read_to_group` upserts `reading_log.status='saved'`.
  The Worker has a D1 binding (`env.DB`, declared in `worker/wrangler.toml`)
  and runs the upserts in single-digit ms.
-* **GitHub dispatch:** anything else — i.e. `/commands` like
- `/reset`, `/digest`, `/stats`, `/help` — fires
+* **GitHub dispatch:** `/digest`, `/reset`, and `h:confirm_clear` fire
  `repository_dispatch` so `process_update.yml` runs
- `python main.py --apply-update`. Commands need the full Python env to
- build multi-line Markdown messages or call the recommender.
+ `python main.py --apply-update`. `/stats` and `/help` are answered in the
+ Worker (D1 reads + `sendMessage`).
 
 `h:delete` / `h:confirm_delete` / `h:cancel_delete` are Telegram-only
 (keyboard swap, deleteMessage) and never touch D1 or GitHub.

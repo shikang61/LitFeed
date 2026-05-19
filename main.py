@@ -1,22 +1,14 @@
-"""Daily arXiv → Telegram alerter with Telegram-driven config + TF-IDF preference filter.
+"""Daily arXiv → Telegram alerter with TF-IDF preference filter.
 
-Each run:
-  1. Polls Telegram for new /commands and inline-keyboard votes (skipped
-     when LITFEED_DISABLE_POLL=1, i.e. the Cloudflare Worker webhook is the
-     update consumer). State mutations go to Cloudflare D1 via state_store.
-  2. (Daily mode) Fetches arXiv papers from configured categories submitted in
-     the last LOOKBACK_HOURS, applies the preference filter (cold-start sends
-     all), and alerts on each survivor with 👍/👎 buttons.
+Each daily run fetches arXiv papers from configured categories, applies the
+preference filter (cold-start sends the freshest), and alerts on survivors with
+inline 👍/👎/Read/Delete buttons.
 
-Commands (owner only):
-  /reset                 → restore default categories
-  /clear                 → wipe all D1 state + reset categories (fresh start)
-  /digest                → send a weekly-style reading digest now
-  /stats                 → show vote counts + filter status
-  /help                  → command list
+Telegram commands and button callbacks are handled by the Cloudflare Worker
+(``worker/index.js``). GitHub Actions runs ``python main.py --apply-update`` for
+/digest, /reset, and confirmed /clear only (Worker → repository_dispatch).
 
-Inline-keyboard buttons on each paper alert: 👍 Like, 👎 Dislike, Read
-(forwards to the To Read group), and Delete.
+Weekly digest: ``python main.py --weekly-digest``.
 """
 
 import argparse
@@ -202,21 +194,6 @@ def record_sent_paper(log, paper, score=None):
     return entry
 
 
-def update_reading_status(log, key, text, status, score=None):
-    entry = _ensure_paper_log_entry(log, key, text=text, score=score)
-    entry["status"] = status
-    entry["status_ts"] = _now_iso()
-    state_store.upsert_paper_log(
-        key,
-        text=entry.get("text"),
-        score=entry.get("score"),
-        status=entry.get("status"),
-        status_ts=entry.get("status_ts"),
-        created_ts=entry.get("created_ts"),
-    )
-    return entry
-
-
 def cached_summary_for_paper(log, key):
     entry = log.get("papers", {}).get(key, {})
     summary = entry.get("grok_summary")
@@ -271,16 +248,6 @@ def send_message(token, chat_id, text, markdown=True, reply_markup=None):
     return None
 
 
-def edit_message_keyboard(token, chat_id, message_id, reply_markup):
-    return telegram_call(
-        token,
-        "editMessageReplyMarkup",
-        chat_id=chat_id,
-        message_id=message_id,
-        reply_markup=json.dumps(reply_markup),
-    )
-
-
 def edit_message_text(token, chat_id, message_id, text, reply_markup=None):
     params = {
         "chat_id": chat_id,
@@ -291,20 +258,6 @@ def edit_message_text(token, chat_id, message_id, text, reply_markup=None):
     if reply_markup is not None:
         params["reply_markup"] = json.dumps(reply_markup)
     return telegram_call(token, "editMessageText", **params)
-
-
-def delete_message(token, chat_id, message_id):
-    return telegram_call(token, "deleteMessage", chat_id=chat_id, message_id=message_id)
-
-
-def forward_message(token, target_chat_id, source_chat_id, message_id):
-    return telegram_call(
-        token,
-        "forwardMessage",
-        chat_id=target_chat_id,
-        from_chat_id=source_chat_id,
-        message_id=message_id,
-    )
 
 
 def grok_summarize_paper(paper):
@@ -364,28 +317,7 @@ def grok_summarize_paper(paper):
         return None
 
 
-def fetch_updates(token, offset):
-    """Return list of new updates (messages + callback_query) with id > offset."""
-    result = telegram_call(
-        token, "getUpdates",
-        offset=offset + 1,
-        timeout=0,
-        allowed_updates=json.dumps(["message", "edited_message", "callback_query"]),
-    )
-    if result is None or not result.get("ok"):
-        return []
-    return result.get("result", [])
-
-
 # ---------- commands ----------
-
-CLEAR_CONFIRM_TEXT = (
-    "*Clear all LitFeed state?*\n\n"
-    "This permanently removes every vote, reading-history row, "
-    "sent-paper dedup entry, category preferences, and the last daily batch. "
-    "Categories will reset to defaults. The recommender goes back to cold start.\n\n"
-    "_This cannot be undone._"
-)
 
 CLEAR_DONE_TEXT = (
     "*LitFeed cleared*\n\n"
@@ -407,25 +339,13 @@ def _execute_clear(cfg, votes, reading_log):
 
 
 def handle_command(text, cfg, votes, reading_log):
-    """Mutate cfg in place. Return (cfg_changed, reply, reply_markup)."""
+    """Mutate cfg in place. Return (cfg_changed, reply, reply_markup).
+
+    Only /digest and /reset reach GitHub Actions (via Worker dispatch).
+    /stats, /help, /clear, votes, Read, and Delete are handled in worker/index.js.
+    """
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].lower()
-    arg = parts[1].strip() if len(parts) > 1 else ""
-
-    if cmd == "/stats":
-        return False, _format_stats(votes, reading_log), None
-
-    if cmd == "/help":
-        return False, (
-            "*Commands*\n"
-            "/reset — restore default categories\n"
-            "/clear — wipe all state (asks for confirmation)\n"
-            "/digest — send a weekly-style reading digest now\n"
-            "/stats — vote counts + filter status\n"
-            "/help — this message\n\n"
-            "_Vote and triage with the buttons under each paper:_ "
-            "👍 / 👎 / Read / Delete."
-        ), None
 
     if cmd == "/digest":
         return False, format_weekly_digest(votes, reading_log), None
@@ -434,40 +354,7 @@ def handle_command(text, cfg, votes, reading_log):
         cfg["categories"] = list(DEFAULT_CATEGORIES)
         return True, "Config reset to defaults.", None
 
-    if cmd == "/clear":
-        return False, CLEAR_CONFIRM_TEXT, clear_confirmation_keyboard()
-
     return False, None, None
-
-
-def _format_stats(votes, reading_log):
-    nl, nd = len(votes["liked"]), len(votes["disliked"])
-    active = nl >= MIN_VOTES_PER_SIDE and nd >= MIN_VOTES_PER_SIDE
-    status = "active" if active else f"cold start (need ≥{MIN_VOTES_PER_SIDE} each)"
-    reading_counts = reading_status_counts(reading_log)
-    topics = format_topic_summary(reading_log)
-    prefs = state_store.load_category_preferences()
-    pref_line = ""
-    if prefs:
-        top = sorted(prefs.items(), key=lambda item: (-item[1], item[0]))[:5]
-        pref_line = "\n*Category lean:* " + ", ".join(
-            f"`{escape_markdown(cat)}` ({val:+.1f})" for cat, val in top
-        ) + "\n"
-    embed_note = "off" if os.environ.get("LITFEED_DISABLE_EMBEDDINGS", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) else "on"
-    return (
-        f"*Votes*\n👍 {nl}\n👎 {nd}\n"
-        f"_Capped at {state_store.MAX_VOTES_PER_SIDE} per side (oldest dropped)._\n\n"
-        f"*Filter:* {status}\n"
-        f"*Scoring:* TF-IDF + embeddings ({embed_note})\n\n"
-        f"*Reading*\n"
-        f"Saved: {reading_counts.get('saved', 0)}\n\n"
-        f"*Topics:* {topics}"
-        f"{pref_line}"
-    )
 
 
 def reading_status_counts(reading_log):
@@ -494,18 +381,6 @@ def top_topics_for_entries(entries, limit=5):
         for topic in infer_topics(text):
             counts[topic] = counts.get(topic, 0) + 1
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
-
-
-def format_topic_summary(reading_log):
-    meaningful = [
-        entry
-        for entry in reading_log.get("papers", {}).values()
-        if entry.get("status") == "saved"
-    ]
-    topics = top_topics_for_entries(meaningful)
-    if not topics:
-        return "_not enough reading data yet_"
-    return ", ".join(f"`{escape_markdown(topic)}` ({count})" for topic, count in topics)
 
 
 def _sorted_papers(reading_log):
@@ -579,11 +454,6 @@ def _primary_category_from_paper(paper):
     return paper.categories[0] if paper.categories else "_global"
 
 
-def _categories_for_key(reading_log, key):
-    entry = reading_log.get("papers", {}).get(key, {})
-    return list(entry.get("categories") or [])
-
-
 def normalized_category_bonus(category_prefs, category):
     if not category_prefs or category in ("", "_global"):
         return 0.0
@@ -597,223 +467,54 @@ def normalized_category_bonus(category_prefs, category):
     return CATEGORY_PREF_ALPHA * (raw / span)
 
 
-def _record_vote(votes, key, text, action, reading_log=None):
-    """Move a paper into the liked/disliked bucket, replacing any prior vote."""
-    votes["liked"] = [v for v in votes["liked"] if v["key"] != key]
-    votes["disliked"] = [v for v in votes["disliked"] if v["key"] != key]
-    bucket = "liked" if action == "like" else "disliked"
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    votes[bucket].append({"key": key, "text": text, "ts": ts})
-    state_store.record_vote(key, text, bucket, ts)
+def handle_clear_confirm_callback(token, chat_id, callback, votes, reading_log, cfg):
+    """Wipe D1 after the owner confirms /clear in the Worker UI.
 
-    if reading_log is not None:
-        cats = _categories_for_key(reading_log, key)
-        prefs = state_store.load_category_preferences()
-        if action == "like":
-            state_store.bump_category_preferences(prefs, cats, delta_primary=1.0, delta_secondary=0.25)
-        else:
-            state_store.bump_category_preferences(prefs, cats, delta_primary=-0.5, delta_secondary=-0.15)
-        state_store.save_category_preferences(prefs)
-
-
-def handle_callback(
-    token, chat_id, callback, votes, reading_log, cfg, webhook_handled=False
-):
-    """Record owner per-paper vote/reading buttons.
-
-    Returns ``(votes_changed, reading_changed, cfg_changed)``.
-
-    When ``webhook_handled`` is True, the Cloudflare Worker has already performed
-    Telegram-side actions for this callback (forwarding, deletion, keyboard edits,
-    answerCallbackQuery). We skip those and only mutate state files."""
-    cb_id = callback["id"]
+    The Worker already answered the callback with a \"Clearing…\" toast; we only
+    mutate state and edit the confirmation message here.
+    Returns ``(votes_changed, reading_changed, cfg_changed)``."""
     parts = callback.get("data", "").split(":", 2)
-    valid_vote = len(parts) == 3 and parts[0] == "v" and parts[1] in ("like", "dislike")
-    valid_habit = (
-        len(parts) == 3
-        and parts[0] == "h"
-        and parts[1]
-        in (
-            "read_to_group",
-            "delete",
-            "confirm_delete",
-            "cancel_delete",
-            "confirm_clear",
-            "cancel_clear",
-        )
-    )
-    if not valid_vote and not valid_habit:
-        if not webhook_handled:
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+    if len(parts) != 3 or parts[0] != "h" or parts[1] != "confirm_clear":
         return False, False, False
-    kind, action, key = parts
 
     message = callback.get("message") or {}
     message_id = message.get("message_id")
     source_chat_id = message.get("chat", {}).get("id") or chat_id
-
-    if kind == "h" and action == "read_to_group":
-        text_value = _lookup_paper_text(votes, key)
-        if webhook_handled:
-            if text_value:
-                update_reading_status(reading_log, key, text_value, "saved")
-                cats = _categories_for_key(reading_log, key)
-                prefs = state_store.load_category_preferences()
-                state_store.bump_category_preferences(
-                    prefs, cats, delta_primary=0.5, delta_secondary=0.15
-                )
-                state_store.save_category_preferences(prefs)
-            return False, bool(text_value), False
-        target_chat_id = os.environ.get("LITFEED_TO_READ_CHAT_ID")
-        if not target_chat_id:
-            telegram_call(
-                token,
-                "answerCallbackQuery",
-                callback_query_id=cb_id,
-                text="Set LITFEED_TO_READ_CHAT_ID to forward papers.",
-            )
-            return False, False, False
-        if not message_id:
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
-            return False, False, False
-        result = forward_message(token, target_chat_id, source_chat_id, message_id)
-        if not result or not result.get("ok"):
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not forward.")
-            return False, False, False
-
-        if text_value:
-            update_reading_status(reading_log, key, text_value, "saved")
-            cats = _categories_for_key(reading_log, key)
-            prefs = state_store.load_category_preferences()
-            state_store.bump_category_preferences(
-                prefs, cats, delta_primary=0.5, delta_secondary=0.15
-            )
-            state_store.save_category_preferences(prefs)
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Forwarded to To Read.")
-        return False, bool(text_value), False
-
-    if kind == "h" and action in ("confirm_clear", "cancel_clear"):
-        if webhook_handled:
-            if action == "confirm_clear":
-                _execute_clear(cfg, votes, reading_log)
-                return False, False, True
-            return False, False, False
-        if not message_id:
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
-            return False, False, False
-        if action == "cancel_clear":
-            edit_message_text(
-                token,
-                source_chat_id,
-                message_id,
-                "Clear cancelled.",
-                reply_markup={"inline_keyboard": []},
-            )
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Cancelled.")
-            return False, False, False
-        _execute_clear(cfg, votes, reading_log)
-        edit_message_text(
-            token,
-            source_chat_id,
-            message_id,
-            CLEAR_DONE_TEXT,
-            reply_markup={"inline_keyboard": []},
-        )
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Cleared.")
-        return False, False, True
-
-    if kind == "h" and action in ("delete", "confirm_delete", "cancel_delete"):
-        # No state mutation; the Worker handles these entirely in webhook mode.
-        if webhook_handled:
-            return False, False, False
-        if not message_id:
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
-            return False, False, False
-        if action == "delete":
-            edit_message_keyboard(token, source_chat_id, message_id, delete_confirmation_keyboard(key))
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Confirm deletion?")
-            return False, False, False
-        if action == "cancel_delete":
-            edit_message_keyboard(token, source_chat_id, message_id, vote_keyboard(key))
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deletion cancelled.")
-            return False, False, False
-        result = delete_message(token, source_chat_id, message_id)
-        if result and result.get("ok"):
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Deleted.")
-        else:
-            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not delete message.")
+    if not message_id:
         return False, False, False
 
-    # kind == "v" — like/dislike vote
-    text_value = _lookup_paper_text(votes, key)
-    if not text_value:
-        if not webhook_handled:
-            telegram_call(
-                token, "answerCallbackQuery",
-                callback_query_id=cb_id,
-                text="Paper context expired; vote from latest batch.",
-            )
-        return False, False, False
-
-    _record_vote(votes, key, text_value, action, reading_log=reading_log)
-    if not webhook_handled:
-        toast = f"Recorded {'👍' if action == 'like' else '👎'}"
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text=toast)
-    return True, False, False
+    _execute_clear(cfg, votes, reading_log)
+    edit_message_text(
+        token,
+        source_chat_id,
+        message_id,
+        CLEAR_DONE_TEXT,
+        reply_markup={"inline_keyboard": []},
+    )
+    return False, False, True
 
 
-def _lookup_paper_text(votes, key):
-    for entry in votes.get("last_batch", {}).values():
-        if isinstance(entry, dict) and entry.get("key") == key:
-            text_value = entry.get("text")
-            if text_value:
-                return text_value
-    return None
-
-
-def process_telegram_updates(token, chat_id, cfg, votes, reading_log):
-    """Poll Telegram; apply owner commands + vote callbacks.
-    Returns (cfg_changed, votes_changed, reading_changed)."""
+def apply_webhook_update(token, chat_id, update, cfg, votes, reading_log):
+    """Process a single update dispatched by the Cloudflare Worker → GitHub Actions."""
     try:
         owner_id = int(chat_id)
     except (TypeError, ValueError):
-        print("CHAT_ID is not an integer; skipping update processing.", file=sys.stderr)
+        print("CHAT_ID is not an integer; skipping webhook update.", file=sys.stderr)
         return False, False, False
 
-    updates = fetch_updates(token, cfg["last_update_id"])
-    cfg_changed = False
-    votes_changed = False
-    reading_changed = False
+    cfg["last_update_id"] = max(cfg.get("last_update_id", 0), update.get("update_id", 0))
 
-    for upd in updates:
-        cfg["last_update_id"] = max(cfg["last_update_id"], upd.get("update_id", 0))
-        c, v, r = _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhook_handled=False)
-        cfg_changed = cfg_changed or c
-        votes_changed = votes_changed or v
-        reading_changed = reading_changed or r
-
-    return cfg_changed, votes_changed, reading_changed
-
-
-def _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhook_handled):
-    """Process a single Telegram update. Shared between getUpdates polling and
-    the Cloudflare Worker → repository_dispatch path.
-    Returns (cfg_changed, votes_changed, reading_changed)."""
-    cb = upd.get("callback_query")
+    cb = update.get("callback_query")
     if cb:
-        sender = cb.get("from", {}).get("id")
-        if sender != owner_id:
+        if cb.get("from", {}).get("id") != owner_id:
             return False, False, False
-        vote_mutated, reading_mutated, cfg_mutated = handle_callback(
-            token, chat_id, cb, votes, reading_log, cfg, webhook_handled=webhook_handled
+        vote_mutated, reading_mutated, cfg_mutated = handle_clear_confirm_callback(
+            token, chat_id, cb, votes, reading_log, cfg,
         )
         return cfg_mutated, vote_mutated, reading_mutated
 
-    msg = upd.get("message") or upd.get("edited_message")
-    if not msg:
-        return False, False, False
-    sender = msg.get("from", {}).get("id")
-    if sender != owner_id:
+    msg = update.get("message") or update.get("edited_message")
+    if not msg or msg.get("from", {}).get("id") != owner_id:
         return False, False, False
     text = msg.get("text", "")
     if not text.startswith("/"):
@@ -822,20 +523,6 @@ def _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhoo
     if reply:
         send_message(token, chat_id, reply, reply_markup=reply_markup)
     return mutated, False, False
-
-
-def apply_webhook_update(token, chat_id, update, webhook_handled, cfg, votes, reading_log):
-    """Process a single update arriving via Cloudflare Worker → repository_dispatch."""
-    try:
-        owner_id = int(chat_id)
-    except (TypeError, ValueError):
-        print("CHAT_ID is not an integer; skipping webhook update.", file=sys.stderr)
-        return False, False, False
-    cfg["last_update_id"] = max(cfg.get("last_update_id", 0), update.get("update_id", 0))
-    return _apply_update(
-        token, chat_id, owner_id, update, cfg, votes, reading_log,
-        webhook_handled=webhook_handled,
-    )
 
 
 # ---------- arxiv ----------
@@ -1076,28 +763,6 @@ def vote_keyboard(key):
             [
                 {"text": "Read", "callback_data": f"h:read_to_group:{key}"},
                 {"text": "Delete", "callback_data": f"h:delete:{key}"},
-            ],
-        ]
-    }
-
-
-def delete_confirmation_keyboard(key):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Confirm delete", "callback_data": f"h:confirm_delete:{key}"},
-                {"text": "Cancel", "callback_data": f"h:cancel_delete:{key}"},
-            ],
-        ]
-    }
-
-
-def clear_confirmation_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Confirm clear", "callback_data": "h:confirm_clear:all"},
-                {"text": "Cancel", "callback_data": "h:cancel_clear:all"},
             ],
         ]
     }
@@ -1406,7 +1071,7 @@ def main():
     parser.add_argument(
         "--commands-only",
         action="store_true",
-        help="Only process queued Telegram updates (commands + votes); skip arXiv fetch.",
+        help="No-op (legacy flag). Telegram is handled by the Cloudflare Worker webhook.",
     )
     parser.add_argument(
         "--weekly-digest",
@@ -1417,10 +1082,8 @@ def main():
         "--apply-update",
         action="store_true",
         help=(
-            "Process a single Telegram update payload from the LITFEED_UPDATE_JSON "
-            "env var (sent by the Cloudflare Worker via repository_dispatch). "
-            "Set LITFEED_WEBHOOK_HANDLED=1 if the Worker has already performed "
-            "Telegram-side actions for this update."
+            "Process a single Telegram update from LITFEED_UPDATE_JSON "
+            "(Worker → repository_dispatch): /digest, /reset, or /clear confirm."
         ),
     )
     args = parser.parse_args()
@@ -1445,9 +1108,8 @@ def main():
         except json.JSONDecodeError as e:
             print(f"LITFEED_UPDATE_JSON is not valid JSON: {e}", file=sys.stderr)
             sys.exit(1)
-        webhook_handled = os.environ.get("LITFEED_WEBHOOK_HANDLED", "").lower() in ("1", "true", "yes")
         cfg_changed, votes_changed, reading_changed = apply_webhook_update(
-            token, chat_id, update, webhook_handled, cfg, votes, reading_log,
+            token, chat_id, update, cfg, votes, reading_log,
         )
         save_config(cfg)  # last_update_id advances
         if votes_changed:
@@ -1456,38 +1118,23 @@ def main():
             save_reading_log(reading_log)
         print(
             f"Applied webhook update {update.get('update_id')}: "
-            f"cfg={cfg_changed} votes={votes_changed} reading={reading_changed} "
-            f"(webhook_handled={webhook_handled})"
+            f"cfg={cfg_changed} votes={votes_changed} reading={reading_changed}"
         )
         return
 
-    # 1. process pending /commands + callback votes (skipped when running behind a webhook)
-    poll_disabled = os.environ.get("LITFEED_DISABLE_POLL", "").lower() in ("1", "true", "yes")
-    if poll_disabled:
-        print("LITFEED_DISABLE_POLL set; skipping getUpdates poll (webhook is the consumer).")
-        cfg_changed = votes_changed = reading_changed = False
-    else:
-        cfg_changed, votes_changed, reading_changed = process_telegram_updates(token, chat_id, cfg, votes, reading_log)
-    save_config(cfg)  # always — last_update_id advances
-    if votes_changed:
-        save_votes(votes)
-    if reading_changed:
-        save_reading_log(reading_log)
-    if cfg_changed:
-        print("Config mutated by Telegram command(s) this run.")
-    if votes_changed:
-        print("Votes mutated by callback(s) this run.")
-    if reading_changed:
-        print("Reading log mutated by Telegram action(s) this run.")
+    if args.commands_only:
+        print(
+            "--commands-only is a no-op: Telegram updates are handled by the "
+            "Cloudflare Worker webhook (see worker/index.js).",
+            file=sys.stderr,
+        )
+        return
 
     if args.weekly_digest:
         send_message(token, chat_id, format_weekly_digest(votes, reading_log))
         return
 
-    if args.commands_only:
-        return
-
-    # 2. fetch + filter + alert
+    # fetch + filter + alert
     try:
         papers = fetch_recent_papers(cfg["categories"], LOOKBACK_HOURS)
     except Exception as e:
