@@ -21,6 +21,7 @@ import sys
 import time
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 
@@ -109,18 +110,10 @@ PRIORITY_CATEGORIES = {
     "q-fin.RM",
 }
 
-TOPIC_KEYWORDS = {
-    "plasma": ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
-    "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],
-    "PDEs": ["pde", "partial differential", "equation", "finite element", "spectral method"],
-    "numerics": ["numerical", "simulation", "solver", "discretization", "monte carlo", "mesh"],
-    "inverse problems": ["inverse problem", "bayesian", "uncertainty", "regularization", "reconstruction"],
-    "optimization": ["optimization", "optimal control", "gradient", "convex", "variational"],
-    "machine learning": ["machine learning", "neural", "transformer", "diffusion", "reinforcement learning"],
-    "quantum": ["quantum", "qubit", "hamiltonian", "spectral triple", "nisq"],
-    "finance": ["portfolio", "market", "trading", "risk", "volatility", "option"],
-    "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"],
-}
+with (Path(__file__).resolve().parent / "shared" / "topic_keywords.json").open(
+    encoding="utf-8"
+) as _topic_keywords_file:
+    TOPIC_KEYWORDS = json.load(_topic_keywords_file)
 
 # ---------- config + votes ----------
 #
@@ -128,10 +121,10 @@ TOPIC_KEYWORDS = {
 # ``state_store.py`` and ``docs/architecture.md``). Per-row mutations
 # (votes, reading_log entries, last_update_id) are written in real time
 # through the narrow mutators (record_vote, upsert_paper_log,
-# set_last_update_id, …); the legacy ``save_config`` / ``save_votes`` /
-# ``save_reading_log`` calls below only flush wholesale-replaced state
-# (last_batch table, sent_ids ring buffer). The only file the app writes
-# is ``config.json``, and only when ``categories`` changes (i.e. on /reset).
+# set_last_update_id, …); ``save_config`` / ``save_votes`` flush
+# wholesale-replaced state (last_batch table, sent_ids ring buffer).
+# The only file the app writes is ``config.json``, and only when
+# ``categories`` changes (i.e. on /reset).
 
 state_store.set_default_categories(DEFAULT_CATEGORIES)
 
@@ -140,7 +133,6 @@ save_config = state_store.save_config
 load_votes = state_store.load_votes
 save_votes = state_store.save_votes
 load_reading_log = state_store.load_reading_log
-save_reading_log = state_store.save_reading_log
 
 
 def _now_iso():
@@ -1114,8 +1106,6 @@ def main():
         save_config(cfg)  # last_update_id advances
         if votes_changed:
             save_votes(votes)
-        if reading_changed:
-            save_reading_log(reading_log)
         print(
             f"Applied webhook update {update.get('update_id')}: "
             f"cfg={cfg_changed} votes={votes_changed} reading={reading_changed}"
@@ -1239,7 +1229,6 @@ def main():
         save_config(cfg)
         votes["last_batch"] = last_batch
         save_votes(votes)
-        save_reading_log(reading_log)  # no-op kept for symmetry
         print(f"Sent {len(newly_sent)} messages.")
 
 

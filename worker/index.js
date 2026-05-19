@@ -10,13 +10,14 @@
  *      - h:read_to_group  → forward the paper message to LITFEED_TO_READ_CHAT_ID
  *        and upsert reading_log.status='saved' in D1.
  *      - h:delete / h:confirm_delete / h:cancel_delete — paper message deletion
- *      - h:confirm_clear / h:cancel_clear — /clear confirmation (clear dispatches to GitHub)
+ *      - h:cancel_clear — /clear cancelled (edit message)
+ *      - /stats, /help, /clear prompt — answered here (D1 reads + sendMessage).
  *
- *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
- *      .github/workflows/process_update.yml using `python main.py --apply-update`):
- *      - /stats, /help — answered here (D1 reads + sendMessage).
+ *   2. Dispatched to GitHub (repository_dispatch → process_update.yml →
+ *      `python main.py --apply-update`):
  *      - /digest — instant ack here, then dispatch; full digest from main.py.
- *      - /reset, /clear — dispatch only (mutates D1 and/or config.json in GitHub Actions).
+ *      - /reset — category reset (may commit config.json).
+ *      - h:confirm_clear — D1 wipe + categories reset in GitHub Actions.
  *
  * Required Worker secrets (set via `wrangler secret put NAME`):
  *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
@@ -32,6 +33,8 @@
  *   DB → litfeed_state database
  */
 
+import TOPIC_KEYWORDS from "../shared/topic_keywords.json";
+
 const TG_API = "https://api.telegram.org";
 const MIN_VOTES_PER_SIDE = 10;
 const MAX_VOTES_PER_SIDE = 250;
@@ -42,32 +45,6 @@ const CLEAR_CONFIRM_TEXT =
   "sent-paper dedup entry, category preferences, and the last daily batch. " +
   "Categories will reset to defaults. The recommender goes back to cold start.\n\n" +
   "_This cannot be undone._";
-
-// Keep in sync with TOPIC_KEYWORDS in main.py (weekly digest topic labels).
-const TOPIC_KEYWORDS = {
-  plasma: ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
-  "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],
-  PDEs: ["pde", "partial differential", "equation", "finite element", "spectral method"],
-  numerics: ["numerical", "simulation", "solver", "discretization", "monte carlo", "mesh"],
-  "inverse problems": [
-    "inverse problem",
-    "bayesian",
-    "uncertainty",
-    "regularization",
-    "reconstruction",
-  ],
-  optimization: ["optimization", "optimal control", "gradient", "convex", "variational"],
-  "machine learning": [
-    "machine learning",
-    "neural",
-    "transformer",
-    "diffusion",
-    "reinforcement learning",
-  ],
-  quantum: ["quantum", "qubit", "hamiltonian", "spectral triple", "nisq"],
-  finance: ["portfolio", "market", "trading", "risk", "volatility", "option"],
-  "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"],
-};
 
 function inferTopics(text) {
   const lowered = (text || "").toLowerCase();
@@ -144,7 +121,7 @@ export default {
           chat_id: env.CHAT_ID,
           text: "Generating digest…",
         });
-        ctx.waitUntil(dispatchToGitHub(env, update, false));
+        ctx.waitUntil(dispatchToGitHub(env, update));
         return new Response("OK");
       }
       if (cmd === "/clear") {
@@ -158,8 +135,8 @@ export default {
       }
     }
 
-    // Fall-through: dispatch to GitHub (/reset, unknown commands, legacy paths).
-    ctx.waitUntil(dispatchToGitHub(env, update, false));
+    // Fall-through: dispatch to GitHub (/reset, unknown commands).
+    ctx.waitUntil(dispatchToGitHub(env, update));
     return new Response("OK");
   },
 };
@@ -205,7 +182,7 @@ async function handleCallback(cb, update, env, ctx) {
       return true;
     }
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Clearing…" });
-    ctx.waitUntil(dispatchToGitHub(env, update, false));
+    ctx.waitUntil(dispatchToGitHub(env, update));
     return true;
   }
 
@@ -378,7 +355,7 @@ async function recordReadSaved(env, key) {
   }
 }
 
-async function dispatchToGitHub(env, update, webhookHandled) {
+async function dispatchToGitHub(env, update) {
   if (!env.GITHUB_REPO || !env.GITHUB_PAT) {
     console.error("[github] GITHUB_REPO or GITHUB_PAT missing; cannot dispatch.");
     return;
@@ -396,7 +373,7 @@ async function dispatchToGitHub(env, update, webhookHandled) {
       },
       body: JSON.stringify({
         event_type: "telegram-update",
-        client_payload: { update, webhook_handled: webhookHandled },
+        client_payload: { update },
       }),
     });
     if (!resp.ok) {

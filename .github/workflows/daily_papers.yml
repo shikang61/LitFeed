@@ -41,8 +41,6 @@ jobs:
           LITFEED_TO_READ_CHAT_ID: ${{ secrets.LITFEED_TO_READ_CHAT_ID }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
-          # Webhook is the update consumer; getUpdates would 409 here.
-          LITFEED_DISABLE_POLL: "1"
           # Cloudflare D1 holds all runtime state (votes, reading_log,
           # sent_ids, last_batch, last_update_id). config.json carries only
           # categories and is rewritten only on /reset (process_update.yml).

@@ -121,7 +121,6 @@ escape hatches were retired in Phase F.
  `/digest`, `/reset`, and confirmed `/clear` (the Worker handles votes, Read,
  Delete, `/stats`, `/help`, and the `/clear` prompt directly). Runs
  `python main.py --apply-update` with the update in `LITFEED_UPDATE_JSON`.
-* `poll_commands.yml` — deprecated stub (`--commands-only` is a no-op).
 * `weekly_digest.yml` — Sunday 18:00 UTC, `python main.py --weekly-digest`.
 
 `daily_papers.yml` and `weekly_digest.yml` are pure read+D1-write
@@ -148,10 +147,10 @@ around those bot commits.
 `h:delete` / `h:confirm_delete` / `h:cancel_delete` are Telegram-only
 (keyboard swap, deleteMessage) and never touch D1 or GitHub.
 
-Telegram only allows one update consumer at a time. While a webhook is set,
-`getUpdates` returns HTTP 409, so `poll_commands.yml`'s cron stays disabled.
-Setup is documented in `worker/README.md`; the D1 cutover history (now
-complete) is in `docs/d1_migration.md`.
+Telegram only allows one update consumer at a time. Production uses the Worker
+webhook exclusively (`getUpdates` polling was removed from `main.py`). Setup is
+documented in `worker/README.md`; the D1 cutover history is in
+`docs/d1_migration.md`.
 
 ## Conventions
 
@@ -165,4 +164,4 @@ complete) is in `docs/d1_migration.md`.
 * State mutations must go through `state_store` (never call `_d1` directly
   from `main.py`). Prefer the narrow mutators (`record_vote`,
   `upsert_paper_log`, `replace_last_batch`, …) over wholesale `save_votes`
-  / `save_reading_log` calls so concurrent Worker writes aren't clobbered.
+  calls so concurrent Worker writes aren't clobbered.

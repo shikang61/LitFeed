@@ -1,0 +1,12 @@
+{
+  "plasma": ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
+  "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],
+  "PDEs": ["pde", "partial differential", "equation", "finite element", "spectral method"],
+  "numerics": ["numerical", "simulation", "solver", "discretization", "monte carlo", "mesh"],
+  "inverse problems": ["inverse problem", "bayesian", "uncertainty", "regularization", "reconstruction"],
+  "optimization": ["optimization", "optimal control", "gradient", "convex", "variational"],
+  "machine learning": ["machine learning", "neural", "transformer", "diffusion", "reinforcement learning"],
+  "quantum": ["quantum", "qubit", "hamiltonian", "spectral triple", "nisq"],
+  "finance": ["portfolio", "market", "trading", "risk", "volatility", "option"],
+  "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"]
+}

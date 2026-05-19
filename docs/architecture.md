@@ -151,9 +151,6 @@ of type `run-paper-alerter`). Steps:
    ├─ state_store.load_reading_log()
    │    → D1: SELECT * FROM reading_log
    │
-   ├─ getUpdates is skipped (LITFEED_DISABLE_POLL=1; the webhook owns
-   │    Telegram's update queue)
-   │
    ├─ fetch arXiv RSS for each category, dedup against sent_ids,
    │   drop > LOOKBACK_HOURS, score with recommender (if warm),
    │   apply diversity + per-category cap + priority mix
@@ -168,7 +165,7 @@ of type `run-paper-alerter`). Steps:
          cfg["sent_ids"] += newly_sent  (capped at 500)
          save_config(cfg) → D1: rewrite sent_ids table; set kv.last_update_id
          save_votes(votes) → D1: DELETE FROM last_batch; INSERT new positions
-         (save_reading_log is a no-op; per-paper upserts above already wrote)
+         (reading_log rows were upserted per paper in the loop above)
 ```
 
 Net result on D1: each new paper produces one `reading_log` row + one
@@ -235,16 +232,14 @@ Telegram POSTs the update
         ▼
 Worker (handleCallback returns false → falls through)
         │
-        └─ ctx.waitUntil(dispatchToGitHub(env, update, false))
+        └─ ctx.waitUntil(dispatchToGitHub(env, update))
               POST https://api.github.com/repos/<owner>/LitFeed/dispatches
-              Body: {event_type:"telegram-update",
-                     client_payload:{update, webhook_handled:false}}
+              Body: {event_type:"telegram-update", client_payload:{update}}
         ▼
 GitHub Actions runs process_update.yml
         │
         └─ python main.py --apply-update
               LITFEED_UPDATE_JSON = <the update payload>
-              LITFEED_WEBHOOK_HANDLED = "false"
               │
               ├─ load_config / load_votes / load_reading_log
               │   (all from D1 as in §3.1)
@@ -261,8 +256,8 @@ GitHub Actions runs process_update.yml
 
 The `Commit state changes` step at the end runs `safe_state_push.sh`,
 which only touches `config.json` and exits cleanly when there's nothing
-to commit. So `/digest`, `/stats`, `/help`, etc. all produce zero commits;
-only `/reset` (which actually changes categories) produces a commit.
+to commit. `/digest` and confirmed `/clear` produce zero commits; `/reset`
+and `/clear` confirm (category reset) may commit `config.json`.
 
 ### 3.4 Weekly digest  (Sun 18:00 UTC cron → `weekly_digest.yml` → D1 read)
 
@@ -307,17 +302,11 @@ edge of their network — i.e. in a data center close to the request —
 within ~5ms cold start. `worker/index.js` is one file (~250 lines)
 executed every time a request comes in.
 
-Telegram's bot API supports two delivery models:
+Telegram's bot API supports two delivery models (mutually exclusive):
 
-- **Polling** (`getUpdates`) — your code calls Telegram every N seconds
-  asking "anything new?" That's what GitHub Actions did before, on a
-  5-min cron.
-- **Webhooks** — Telegram instantly POSTs each new event to a URL of your
-  choice. That URL is now the Worker.
-
-The two modes are mutually exclusive (Telegram won't deliver to both), so
-`poll_commands.yml`'s cron is disabled and `LITFEED_DISABLE_POLL=1` is set
-on the daily/weekly workflows.
+- **Polling** (`getUpdates`) — removed from LitFeed; not used in production.
+- **Webhooks** — Telegram POSTs each event to the Cloudflare Worker URL.
+  This is the only supported path.
 
 ### End-to-end request flow
 
@@ -340,10 +329,12 @@ worker/index.js
         │ 3. Branch on update type
         ▼
         ┌──────── Instant path (no GitHub) ────────┐  ┌─ Dispatched path ─┐
-        │ v:like / v:dislike                       │  │ /commands         │
-        │   answerCallbackQuery (toast)            │  │   (only path that │
-        │   ctx.waitUntil(recordVote → D1)         │  │    still needs    │
-        │                                          │  │    main.py)       │
+        │ v:like / v:dislike                       │  │ /digest, /reset,  │
+        │   answerCallbackQuery (toast)            │  │ confirm /clear    │
+        │   ctx.waitUntil(recordVote → D1)         │  │ (needs main.py)   │
+        │                                          │  │                   │
+        │ /stats, /help, /clear prompt             │  │                   │
+        │   sendMessage from Worker                │  │                   │
         │ h:read_to_group                          │  │                   │
         │   forwardMessage to To Read              │  │                   │
         │   answerCallbackQuery                    │  │                   │
@@ -355,11 +346,10 @@ worker/index.js
         └──────────────────────────────────────────┘  └───────────────────┘
               │                                                │
               ▼                                                ▼
-        Telegram sees toast / message change             dispatchToGitHub(env, update, false)
+        Telegram sees toast / message change             dispatchToGitHub(env, update)
         within ~500ms; D1 row upserts in ~ms             POST /repos/<owner>/<repo>/dispatches
                                                          Body: {event_type:"telegram-update",
-                                                                client_payload:{update,
-                                                                                webhook_handled:false}}
+                                                                client_payload:{update}}
                                                                │
                                                                ▼
                                                          process_update.yml
@@ -367,10 +357,9 @@ worker/index.js
                                                          which talks to D1 via REST
 ```
 
-After the migration only `/commands` (`/reset`, `/digest`, `/stats`,
-`/help`) still go via GitHub Actions — those mutate `config.json` or
-want to send a multi-line Telegram message that's easier to assemble in
-Python. Everything else (votes, reads, deletes) is Worker-only.
+GitHub Actions (`--apply-update`) handles `/digest`, `/reset`, and
+confirmed `/clear` only. `/stats`, `/help`, votes, reads, deletes, and the
+`/clear` prompt are Worker-only.
 
 ### Why the two paths
 
@@ -424,13 +413,12 @@ and the digest message appears in Telegram.
 
 ```bash
 # Read-only sanity check (no Telegram traffic, just hits D1)
-LITFEED_DISABLE_POLL=1 \
 CF_ACCOUNT_ID=… CF_D1_DATABASE_ID=… CF_D1_API_TOKEN=… \
 python -c 'import state_store; print(state_store.load_config())'
 
 # Run the daily pipeline locally (will actually send Telegram messages
 # if TELEGRAM_TOKEN + CHAT_ID are set — be careful)
-python main.py --commands-only   # process pending updates, skip fetch
+python main.py
 
 # Inspect D1 directly
 cd worker

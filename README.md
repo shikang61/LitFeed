@@ -1,31 +1,28 @@
 # LitFeed
 
-Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions, with optional sub-second button reactions through a Cloudflare Worker webhook.
+Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions, with sub-second button reactions through a Cloudflare Worker webhook.
 
 Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 and reading-habit buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see, and use the reading log to save papers to your To Read queue.
 
 ## Architecture
 
 ```
-Telegram ── webhook ──► Cloudflare Worker ──► repository_dispatch ──► process_update.yml
-                              │                                              │
-                              └─ instant: forward / delete / edit keyboard   └─ python main.py --apply-update (mutates state, commits)
+Telegram ── webhook ──► Cloudflare Worker
+                              │
+                              ├─ instant (D1 + Telegram): 👍/👎, Read, Delete,
+                              │                            /stats, /help, /clear prompt
+                              │
+                              └─ repository_dispatch ──► process_update.yml
+                                    └─ python main.py --apply-update
+                                       (/digest, /reset, confirmed /clear)
 
 GitHub Actions cron ──► daily_papers.yml ── arXiv RSS → preference filter → Telegram
 GitHub Actions cron ──► weekly_digest.yml ── reading-log digest → Telegram
 ```
 
-The Cloudflare Worker (see `worker/`) handles `Read` / `Delete` / 👍 / 👎
-button taps in under a second by calling the Telegram Bot API directly.
-State-mutating updates (vote callbacks, `Read`-button forwards, configuration
-commands like `/digest`) are forwarded to GitHub via `repository_dispatch`;
-`process_update.yml` runs `python main.py --apply-update` and commits the new
-state files. The webhook is optional — if you skip the Worker, re-enable the
-cron in `poll_commands.yml` and unset `LITFEED_DISABLE_POLL` on the other
-workflows to fall back to 5-minute `getUpdates` polling.
+The Worker (`worker/`) is the **only** Telegram update consumer. A webhook must be configured (see below); `getUpdates` polling was removed from `main.py`.
 
-For a deeper walkthrough of the request flow, why each path exists, and the
-infrastructure under the hood, see [`docs/architecture.md`](docs/architecture.md).
+For a deeper walkthrough, see [`docs/architecture.md`](docs/architecture.md).
 
 ## Setup
 
@@ -42,6 +39,7 @@ infrastructure under the hood, see [`docs/architecture.md`](docs/architecture.md
    ```
    https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
    ```
+   (Only works **before** you set a webhook; afterward use the Worker logs or message the bot and inspect D1.)
 3. Find the `"chat":{"id": ...}` field in the JSON. That number is your `CHAT_ID`.
 
 ### 3. Add GitHub secrets
@@ -51,9 +49,12 @@ In the repository: **Settings → Secrets and variables → Actions → New repo
 | Name              | Value                                       |
 |-------------------|---------------------------------------------|
 | `TELEGRAM_TOKEN`  | The token from BotFather                    |
-| `CHAT_ID`         | The chat ID from `getUpdates`               |
+| `CHAT_ID`         | Your owner chat ID                          |
 | `LITFEED_TO_READ_CHAT_ID` | Optional target group chat ID for the `Read` button |
 | `GROK_API_KEY`    | Optional xAI API key for Grok summaries     |
+| `CF_ACCOUNT_ID`   | Cloudflare account ID (D1)                  |
+| `CF_D1_DATABASE_ID` | D1 database ID (`litfeed_state`)        |
+| `CF_D1_API_TOKEN` | API token with D1:Edit                      |
 
 Optionally set a repository variable named `GROK_MODEL` to override the default Grok model (`grok-4.3`).
 
@@ -61,25 +62,20 @@ Optionally set a repository variable named `GROK_MODEL` to override the default 
 
 The workflow runs daily at **08:00 UTC**. To test immediately, go to **Actions → Daily arXiv Paper Alerts → Run workflow**.
 
-### 5. (Optional) Deploy the Cloudflare Worker for instant button reactions
-
-Without the Worker, button taps are processed on the next 5-minute `getUpdates`
-poll cycle. With the Worker, `Read` / `Delete` taps respond in under a second
-and `/commands` are dispatched to GitHub Actions in real time.
+### 5. Deploy the Cloudflare Worker (required for Telegram)
 
 Setup is documented in [`worker/README.md`](worker/README.md). High-level:
 
 1. `cd worker && wrangler deploy`
 2. `wrangler secret put` for `TELEGRAM_TOKEN`, `CHAT_ID`, `LITFEED_TO_READ_CHAT_ID`, `GITHUB_REPO`, `GITHUB_PAT`, `WEBHOOK_SECRET`.
-3. `curl -X POST https://api.telegram.org/bot<TOKEN>/setWebhook -d url=<WORKER_URL> -d secret_token=<WEBHOOK_SECRET>`.
+3. Apply D1 migrations: `wrangler d1 execute litfeed_state --remote --file ../migrations/0001_init.sql` (and later migrations as needed).
+4. `curl -X POST https://api.telegram.org/bot<TOKEN>/setWebhook -d url=<WORKER_URL> -d secret_token=<WEBHOOK_SECRET>`.
 
-Once a webhook is set, Telegram stops delivering via `getUpdates`, so the
-`poll_commands.yml` cron is intentionally disabled and the daily / weekly runs
-set `LITFEED_DISABLE_POLL=1` to skip the polling step.
+Once a webhook is set, Telegram delivers updates only to the Worker (not `getUpdates`).
 
 ## Customising via Telegram
 
-Voting and triage are done with the inline buttons under each paper alert (see *Reading habit loop* below). `/stats`, `/help`, `/clear`, votes, Read, and Delete are answered instantly by the Cloudflare Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions via `process_update.yml`.
+Voting and triage use the inline buttons under each paper alert (see *Reading habit loop* below). `/stats`, `/help`, `/clear`, votes, Read, and Delete are answered instantly by the Worker. `/digest`, `/reset`, and confirmed `/clear` run in GitHub Actions via `process_update.yml`.
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
@@ -104,7 +100,7 @@ Votes are stored in Cloudflare D1 (the `votes` table) and used to train a TF-IDF
 Each paper alert carries four inline buttons:
 
 - **👍 Like** / **👎 Dislike** — Cloudflare Worker upserts the vote into the D1 `votes` table instantly (sub-second toast).
-- **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in the D1 `reading_log` table. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
+- **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in the D1 `reading_log` table. Add the bot to that group first and set `LITFEED_TO_READ_CHAT_ID` to that group's numeric chat ID.
 - **Delete** — asks for confirmation, then removes the Telegram message.
 - `/digest` sends a weekly-style digest with saved counts, recurring topics, an unread queue, and one deep-read pick.
 
@@ -127,7 +123,7 @@ Edit `main.py` defaults or tune knobs:
 - `MAX_PAPERS_PER_RUN` — total daily paper cap (default 10).
 - `SERENDIPITY_SLOTS` — active-filter daily slots reserved for near-miss papers (default 1).
 - `PRIORITY_CATEGORIES` / `PRIORITY_PAPERS_PER_RUN` — target mix for the final daily batch.
-- `TOPIC_KEYWORDS` — lightweight topic labels shown in `/stats` and the weekly digest.
+- `shared/topic_keywords.json` — topic labels for `/stats` (Worker) and the weekly digest (Python).
 
 ## Local testing
 
@@ -135,6 +131,7 @@ Edit `main.py` defaults or tune knobs:
 pip install -r requirements.txt
 export TELEGRAM_TOKEN=...
 export CHAT_ID=...
+export CF_ACCOUNT_ID=... CF_D1_DATABASE_ID=... CF_D1_API_TOKEN=...
 export GROK_API_KEY=...  # optional
 python main.py
 ```

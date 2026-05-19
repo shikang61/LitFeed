@@ -42,7 +42,6 @@ jobs:
           LITFEED_TO_READ_CHAT_ID: ${{ secrets.LITFEED_TO_READ_CHAT_ID }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
-          LITFEED_DISABLE_POLL: "1"
           # Cloudflare D1 holds all runtime state. This run only reads
           # (votes + reading_log) and sends a digest — no state mutation.
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}

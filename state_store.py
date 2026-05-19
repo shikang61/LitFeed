@@ -192,15 +192,6 @@ def save_votes(votes: dict[str, Any]) -> None:
     replace_last_batch(votes.get("last_batch", {}) or {})
 
 
-def save_reading_log(log: dict[str, Any]) -> None:
-    """No-op kept for main.py call-site compatibility.
-
-    Per-paper changes are upserted as they happen via :func:`upsert_paper_log`
-    / :func:`update_paper_status`; nothing else to flush.
-    """
-    return None
-
-
 # ---------------------------------------------------------------- narrow mutators
 
 

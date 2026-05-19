@@ -1,7 +1,8 @@
 # LitFeed Cloudflare Worker
 
-A tiny Telegram webhook receiver that powers instant button reactions for the
-LitFeed bot. Replaces the 5-minute `getUpdates` poll on GitHub Actions.
+A Telegram webhook receiver — the **only** update consumer for LitFeed in
+production. Handles instant button taps and lightweight commands at the edge;
+dispatches heavier work to GitHub Actions.
 
 For an end-to-end walkthrough of how this Worker plugs into GitHub Actions and
 why the request flow is split into instant vs. dispatched paths, see
@@ -89,22 +90,17 @@ curl -fsS "https://api.telegram.org/bot${TELEGRAM_TOKEN}/getWebhookInfo"
 
 You should see your Worker URL in `result.url` and `pending_update_count: 0`.
 
-### 5. (Optional) Confirm the legacy poll is dormant
-
-`.github/workflows/poll_commands.yml` no longer runs on a cron — it's a manual
-fallback only. Once the webhook is set, the `getUpdates` call inside it would
-return HTTP 409 anyway, so leaving it disabled is correct.
+Topic labels for `/stats` come from `shared/topic_keywords.json` (same file
+the weekly digest uses in Python).
 
 ## Tearing the Worker down
-
-To revert to GitHub-Actions-only polling:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook"
 ```
 
-Then re-enable the `cron` line in `.github/workflows/poll_commands.yml` and
-remove `LITFEED_DISABLE_POLL` from `daily_papers.yml` / `weekly_digest.yml`.
+Telegram commands and buttons will stop working until you set a webhook again.
+There is no `getUpdates` fallback in `main.py`.
 
 ## Local development
 
