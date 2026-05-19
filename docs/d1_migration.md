@@ -146,8 +146,8 @@ is reversible.
 
 Set a repository variable `LITFEED_READ_FROM=d1` in the workflows (or just
 rely on the default once D1 is configured — `state_store._read_source`
-picks `d1` when D1 is configured). Re-run the daily flow; verify `/why N`
-and `/stats` return the same numbers as before.
+picks `d1` when D1 is configured). Re-run the daily flow; verify `/stats`
+returns the same numbers as before.
 
 ### Phase D — deploy Worker D1 writes
 

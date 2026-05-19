@@ -83,29 +83,27 @@ Voting and triage are done with the inline buttons under each paper alert (see *
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
-| `/list`                | Show current categories            |
 | `/reset`               | Restore default categories         |
 | `/digest`              | Send a weekly-style reading digest immediately |
-| `/why N`               | Explain why paper `N` matched your profile |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
 
 ## Preference filter
 
-Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
+Votes are stored in Cloudflare D1 (the `votes` table) and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
 
-- **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
-- **Vote anytime**: tap 👍 / 👎 under any paper. Votes are recorded instantly via the Cloudflare Worker (or on the next 5-minute poll if you skipped the Worker). You can re-vote on the same paper; the latest vote wins.
-- **Latest batch**: each daily run is numbered (`[1]`, `[2]`, …) and the number→paper map is stored compactly in `votes.json`, so the recommender and `/why N` can reconstruct the document later.
+- **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. The score in each alert renders as `-` during this phase.
+- **Score in each alert**: when the filter is active, every paper alert includes the recommender's signed relevance score (e.g. `+0.24`).
+- **Vote anytime**: tap 👍 / 👎 under any paper. Votes land in D1 instantly via the Cloudflare Worker. You can re-vote on the same paper; the latest vote wins.
 - **Serendipity slot**: when the filter is active, one daily slot is reserved for a near-miss paper so the feed can still surface adjacent ideas instead of collapsing too narrowly around old likes.
 - **Priority mix**: each 10-paper batch targets 7 papers from priority categories (`cs.MA`, `math.NA`, `math-ph`, `physics.comp-ph`, `physics.flu-dyn`, `physics.plasm-ph`, `q-fin.CP`, `q-fin.PM`, `q-fin.TR`, `q-fin.RM`) and 3 papers from the remaining configured categories when available.
 
 ## Reading habit loop
 
-LitFeed keeps a separate `reading_log.json` state file. Each paper alert carries four inline buttons:
+Each paper alert carries four inline buttons:
 
-- **👍 Like** / **👎 Dislike** — record the vote in `votes.json`.
-- **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in `reading_log.json`. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
+- **👍 Like** / **👎 Dislike** — Cloudflare Worker upserts the vote into the D1 `votes` table instantly (sub-second toast).
+- **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in the D1 `reading_log` table. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
 - **Delete** — asks for confirmation, then removes the Telegram message.
 - `/digest` sends a weekly-style digest with saved counts, recurring topics, an unread queue, and one deep-read pick.
 
@@ -113,7 +111,7 @@ The `Weekly Reading Digest` workflow runs once per week and calls `python main.p
 
 ## Grok summaries
 
-If `GROK_API_KEY` is configured, LitFeed asks Grok to summarize each paper that is actually sent to Telegram. Summaries are cached in `reading_log.json` by arXiv ID, so reruns do not regenerate the same summary. If the API key is missing or the Grok request fails, the bot falls back to the normal paper message with the full abstract.
+If `GROK_API_KEY` is configured, LitFeed asks Grok to summarize each paper that is actually sent to Telegram. Summaries are cached in the D1 `reading_log.grok_summary` column by arXiv ID, so reruns do not regenerate the same summary. If the API key is missing or the Grok request fails, the bot falls back to the normal paper message with the full abstract.
 
 Only the chat owner (`CHAT_ID`) is authorised; commands from other users are ignored silently.
 

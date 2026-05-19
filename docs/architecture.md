@@ -5,7 +5,9 @@ webhook, the four triggers that make the bot do anything, and exactly which
 D1 row gets read or written at each step.
 
 For the historical context — why we moved from JSON-in-git to D1 — see
-[d1_migration.md](d1_migration.md). For Worker setup, see
+[d1_migration.md](d1_migration.md). For the scoring algorithm (TF-IDF
+model, selection pipeline, tunable knobs, ideas for improvement) see
+[recommender.md](recommender.md). For Worker setup, see
 [../worker/README.md](../worker/README.md).
 
 ## 1. Components at a glance
@@ -89,8 +91,8 @@ kv           (key PK, value)
   so `2401.12345v1` and `v2` don't both alert). Trimmed to 500 newest each
   daily run.
 - **`last_batch`** — positions 1..N for the most recent paper batch. Used
-  by `/why N` and by callback votes to look up paper text. Wholesale-
-  replaced each daily run.
+  by Worker callback votes to look up paper text when the paper isn't
+  in `reading_log` yet. Wholesale-replaced each daily run.
 - **`kv`** — currently only holds `last_update_id` (Telegram offset, kept
   for legacy reasons since the webhook is the live consumer).
 
@@ -221,9 +223,9 @@ Net result: zero GitHub Actions runs, zero git commits, one D1 upsert.
 
 ### 3.3 Telegram command  (Telegram → Worker → `process_update.yml` → D1)
 
-For things the Worker can't (or won't) do at the edge: `/list`, `/reset`,
-`/digest`, `/why N`, `/stats`, `/help`. These need the full Python
-environment (multi-line Markdown, sklearn, `config.json` mutation).
+For things the Worker can't (or won't) do at the edge: `/reset`,
+`/digest`, `/stats`, `/help`. These need the full Python environment
+(multi-line Markdown, sklearn, `config.json` mutation).
 
 ```
 You send /digest
@@ -284,7 +286,7 @@ pure read-and-send.
 | `votes`       | read                    | **upsert row** | —               | read             | —                | read   |
 | `reading_log` | **upsert per paper**    | read for text  | **upsert row**  | read             | —                | read   |
 | `sent_ids`    | **rebuild (capped 500)**| —              | —               | read             | —                | —      |
-| `last_batch`  | **wholesale replace**   | read for text  | —               | read (via `/why`)| —                | —      |
+| `last_batch`  | **wholesale replace**   | read for text  | —               | —                | —                | —      |
 | `kv`          | **set last_update_id**  | —              | —               | **set**          | **set**          | —      |
 | `config.json` | —                       | —              | —               | —                | **rewrite**      | —      |
 
@@ -365,9 +367,9 @@ worker/index.js
                                                          which talks to D1 via REST
 ```
 
-After the migration only `/commands` (`/list`, `/reset`, `/digest`, `/why`,
-`/stats`, `/help`) still go via GitHub Actions — those mutate `config.json`
-or want to send a multi-line Telegram message that's easier to assemble in
+After the migration only `/commands` (`/reset`, `/digest`, `/stats`,
+`/help`) still go via GitHub Actions — those mutate `config.json` or
+want to send a multi-line Telegram message that's easier to assemble in
 Python. Everything else (votes, reads, deletes) is Worker-only.
 
 ### Why the two paths

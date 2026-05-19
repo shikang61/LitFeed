@@ -15,7 +15,7 @@
  *
  *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
  *      .github/workflows/process_update.yml using `python main.py --apply-update`):
- *      - All /commands (e.g. /list, /reset, /digest, /why, /stats, /help)
+ *      - All /commands (e.g. /reset, /digest, /stats, /help)
  *        These mutate config.json or trigger Telegram message sends, so they
  *        still run inside main.py.
  *
@@ -281,8 +281,10 @@ function voteKeyboard(key) {
         { text: "👍 Like", callback_data: `v:like:${key}` },
         { text: "👎 Dislike", callback_data: `v:dislike:${key}` },
       ],
-      [{ text: "Read", callback_data: `h:read_to_group:${key}` }],
-      [{ text: "Delete", callback_data: `h:delete:${key}` }],
+      [
+        { text: "Read", callback_data: `h:read_to_group:${key}` },
+        { text: "Delete", callback_data: `h:delete:${key}` },
+      ],
     ],
   };
 }

@@ -1,17 +1,16 @@
 """Daily arXiv → Telegram alerter with Telegram-driven config + TF-IDF preference filter.
 
 Each run:
-  1. Polls Telegram for new /commands and inline-keyboard votes, mutating
-     config.json and votes.json accordingly.
+  1. Polls Telegram for new /commands and inline-keyboard votes (skipped
+     when LITFEED_DISABLE_POLL=1, i.e. the Cloudflare Worker webhook is the
+     update consumer). State mutations go to Cloudflare D1 via state_store.
   2. (Daily mode) Fetches arXiv papers from configured categories submitted in
      the last LOOKBACK_HOURS, applies the preference filter (cold-start sends
      all), and alerts on each survivor with 👍/👎 buttons.
 
 Commands (owner only):
-  /list                  → show current categories
   /reset                 → restore defaults
   /digest                → send a weekly-style reading digest now
-  /why N                 → explain why paper N matched your profile
   /stats                 → show vote counts + filter status
   /help                  → command list
 
@@ -82,7 +81,7 @@ TELEGRAM_SAFE_MESSAGE_CHARS = 3900
 GROK_API_BASE = "https://api.x.ai/v1"
 GROK_DEFAULT_MODEL = "grok-4.3"
 GROK_SUMMARY_TIMEOUT = 30
-GROK_SUMMARY_LABELS = ("TL;DR:", "Why it may matter:", "Best for:")
+GROK_SUMMARY_LABELS = ("TL;DR:", "Topics:")
 MAX_SENT_IDS = 500
 MIN_VOTES_PER_SIDE = 10
 # Set to 0 to disable category quota and let best papers win globally.
@@ -305,8 +304,8 @@ def grok_summarize_paper(paper):
         "'GRB (gamma-ray burst)' or 'reconnection (magnetic field-line rearrangement)'. "
         "After the first mention you may use the short form. Use this exact structure:\n\n"
         "TL;DR: <one sentence>\n"
-        "Why it may matter: <one sentence>\n"
-        "Best for: <short phrase>\n\n"
+        "Topics: <3 or 4 short keywords or phrases, comma-separated, "
+        "drawn from the paper itself — concrete methods/models/objects, not generic words>\n\n"
         f"Title: {paper.title.strip()}\n"
         f"Categories: {', '.join(paper.categories)}\n"
         f"Abstract: {paper.summary.strip()}"
@@ -366,19 +365,14 @@ def handle_command(text, cfg, votes, reading_log):
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    if cmd in ("/list", "/list@"):
-        return False, _format_list(cfg)
-
     if cmd == "/stats":
         return False, _format_stats(votes, reading_log)
 
     if cmd == "/help":
         return False, (
             "*Commands*\n"
-            "/list — show categories\n"
             "/reset — restore default categories\n"
             "/digest — send a weekly-style reading digest now\n"
-            "/why N — explain why a paper matched\n"
             "/stats — vote counts + filter status\n"
             "/help — this message\n\n"
             "_Vote and triage with the buttons under each paper:_ "
@@ -388,45 +382,11 @@ def handle_command(text, cfg, votes, reading_log):
     if cmd == "/digest":
         return False, format_weekly_digest(votes, reading_log)
 
-    if cmd == "/why":
-        if not arg:
-            return False, "Usage: `/why <number>` — number from the latest batch."
-        entry = votes.get("last_batch", {}).get(arg)
-        if not isinstance(entry, dict):
-            return False, f"Paper `{arg}` not found in the latest batch."
-        text_value = entry.get("text")
-        if not text_value:
-            return False, "No context available for that paper."
-        if not filter_active(votes):
-            return False, (
-                f"*Why {arg}?*\n"
-                "Filter is in *cold start*, so selection is currently freshness-first.\n"
-                "Once you have enough 👍 and 👎 votes, personalized matching will kick in."
-            )
-        model = build_model(votes)
-        floor = current_relevance_floor(votes)
-        score_value = entry.get("score")
-        if score_value is None:
-            score_value = recommender.score(text_value, model)
-        reasons = recommender.explain(text_value, model, top_n=5)
-        reason_text = ", ".join(f"`{escape_markdown(t)}`" for t, _ in reasons) if reasons else "_no strong token signals_"
-        return False, (
-            f"*Why {arg}?*\n"
-            f"Score: `{score_value:.3f}`\n"
-            f"Selection threshold: `{floor:.3f}`\n"
-            f"Top matched terms: {reason_text}"
-        )
-
     if cmd == "/reset":
         cfg["categories"] = list(DEFAULT_CATEGORIES)
         return True, "Config reset to defaults."
 
     return False, None
-
-
-def _format_list(cfg):
-    cats = "\n".join(f"• `{c}`" for c in cfg["categories"]) or "_(none)_"
-    return f"*Categories*\n{cats}"
 
 
 def _format_stats(votes, reading_log):
@@ -854,8 +814,39 @@ def escape_markdown(text):
     return text
 
 
+def extract_topics(grok_summary):
+    """Return (topics_list, body_without_topics_line).
+
+    Looks for the first line starting with ``Topics:`` (case-insensitive) in the
+    Grok summary, splits its tail on commas, and returns the keyword list plus
+    the remaining body text with that line removed. Keywords are stripped and
+    de-duplicated while preserving order. If no Topics line is found, returns
+    ``([], grok_summary)`` unchanged.
+    """
+    if not grok_summary:
+        return [], grok_summary or ""
+    body_lines: list[str] = []
+    topics: list[str] = []
+    seen: set[str] = set()
+    found = False
+    for line in grok_summary.splitlines():
+        stripped = line.strip()
+        if not found and stripped.lower().startswith("topics:"):
+            found = True
+            tail = stripped.split(":", 1)[1] if ":" in stripped else ""
+            for raw in tail.split(","):
+                kw = raw.strip().strip(".;").strip()
+                key = kw.lower()
+                if kw and key not in seen:
+                    seen.add(key)
+                    topics.append(kw)
+            continue
+        body_lines.append(line)
+    return topics, "\n".join(body_lines).strip("\n")
+
+
 def format_grok_summary(text):
-    """Bold the section labels (TL;DR, Why it may matter, Best for) for Telegram Markdown."""
+    """Bold the section labels (e.g. TL;DR) for Telegram Markdown."""
     lines = []
     for line in text.strip().splitlines():
         stripped = line.lstrip()
@@ -873,23 +864,43 @@ def format_grok_summary(text):
     return "\n".join(lines)
 
 
-def format_paper(paper, index, grok_summary=None):
+def format_paper(paper, index, grok_summary=None, score=None):
     title = escape_markdown(latex_to_unicode(paper.title.strip().replace("\n", " ")))
     names = [a.name for a in paper.authors]
-    if len(names) <= 3:
-        authors = ", ".join(names)
+    if not names:
+        authors = ""
+    elif len(names) == 1:
+        authors = names[0]
     else:
-        authors = f"{names[0]}, {names[1]}, …, {names[-1]}"
+        authors = f"{names[0]} et al."
     authors = escape_markdown(latex_to_unicode(authors))
-    categories = " ".join(f"\\[{c}]" for c in paper.categories)
+
+    # Tag bar: paper-derived keywords from Grok's Topics line. When Grok is
+    # unavailable, we omit the tag bar entirely rather than fall back to raw
+    # arXiv category codes (which were the thing that made this hard to read).
+    topics, grok_body = extract_topics(grok_summary) if grok_summary else ([], "")
+    if topics:
+        tag_bar = " ".join(f"\\[{escape_markdown(t)}]" for t in topics) + "\n"
+    else:
+        tag_bar = ""
+
+    # Relevance score from the recommender. In cold start the filter isn't
+    # running, so we don't have a personalized score — render "-" instead.
+    if score is None or (isinstance(score, float) and math.isnan(score)):
+        score_str = "-"
+    else:
+        score_str = f"{score:+.2f}"
+    score_line = f"*Score:* {score_str}\n"
+
     prefix = (
         f"*[{index}] {title}*\n"
         f"_{authors}_\n"
-        f"{categories}\n\n"
+        f"{score_line}"
+        f"{tag_bar}\n"
     )
     suffix = f"\n\n[arXiv:{paper.get_short_id()}]({paper.entry_id})"
     if grok_summary:
-        body = f"*Grok summary*\n{format_grok_summary(grok_summary)}"
+        body = f"*Grok summary*\n{format_grok_summary(grok_body)}"
     else:
         abstract = latex_to_unicode(paper.summary.strip().replace("\n", " "))
         body = escape_markdown(abstract)
@@ -908,8 +919,6 @@ def vote_keyboard(key):
             ],
             [
                 {"text": "Read", "callback_data": f"h:read_to_group:{key}"},
-            ],
-            [
                 {"text": "Delete", "callback_data": f"h:delete:{key}"},
             ],
         ]
@@ -1286,8 +1295,9 @@ def main():
         key = paper_key(paper)
         text_value = paper_text(paper)
         grok_summary = summary_for_paper(paper, reading_log)
+        score = score_by_key.get(key)  # None in cold start; format_paper renders "-"
         msg_id = send_message(
-            token, chat_id, format_paper(paper, i, grok_summary=grok_summary),
+            token, chat_id, format_paper(paper, i, grok_summary=grok_summary, score=score),
             reply_markup=vote_keyboard(key),
         )
         if msg_id is not None:

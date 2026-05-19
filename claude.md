@@ -44,16 +44,23 @@ A run (`python main.py`) does two things in order:
    * Send each survivor to Telegram (Markdown, 👍/👎 buttons), record it in
      D1 (`sent_ids` + `reading_log` + `last_batch`).
 
-### Recommender (`recommender.py`)
+### Recommender (`recommender.py` + selection helpers in `main.py`)
 
 `fit(liked_docs, disliked_docs)` builds a TF-IDF model (1–2 grams, English
-stop words) and liked/disliked centroids. `score(text, model)` returns
-`cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is imported
-lazily so `--commands-only` runs don't need it.
+stop words, sublinear TF) and recency-weighted liked/disliked centroids
+(45-day half-life). `score(text, model)` returns
+`cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is
+imported lazily so `--commands-only` runs don't need it.
+
+The full algorithm (cold-start gate, relevance floor, diversity guardrail,
+serendipity slot, priority mix, weekly-digest deep-read pick, tunable
+knobs, and ideas for improvement) is documented end-to-end in
+[docs/recommender.md](docs/recommender.md). Revisit that doc before
+changing scoring behavior.
 
 ## Telegram Commands (owner only)
 
-`/list`, `/reset`, `/digest`, `/why N`, `/stats`, `/help`. Non-owner senders
+`/reset`, `/digest`, `/stats`, `/help`. Non-owner senders
 are ignored.
 
 Voting and triage are button-only. Each paper alert carries an inline keyboard
@@ -63,7 +70,8 @@ Read (forwards to the To Read group, `h:read_to_group:<key>`), and Delete
 callback instantly with a toast and writes vote / read-saved upserts to D1
 directly. Only `/commands` (which build multi-line Markdown replies) are
 forwarded to GitHub via `repository_dispatch` so `main.py --apply-update`
-can compose them. `/why N` still explains why paper `N` matched your profile.
+can compose them. Each paper alert carries the recommender's relevance
+score (or `-` during cold start) directly in the message header.
 
 ## State
 
@@ -87,7 +95,8 @@ D1 tables (see `migrations/0001_init.sql`):
 * `sent_ids(paper_key PK, sent_ts)` — dedup ring buffer, trimmed to
  `MAX_SENT_IDS` after each daily run.
 * `last_batch(position PK, paper_key, text, score)` — wholly replaced each
- daily run; used by `/why N` and vote callbacks.
+ daily run; used by Worker vote callbacks to look up text when a paper
+ hasn't been written to `reading_log` yet.
 * `kv(key PK, value)` — small scalars (currently just `last_update_id`).
 
 `config.json` keeps **only** the user-edited `categories` list, version-
@@ -138,8 +147,8 @@ around those bot commits.
  `votes` table; `h:read_to_group` upserts `reading_log.status='saved'`.
  The Worker has a D1 binding (`env.DB`, declared in `worker/wrangler.toml`)
  and runs the upserts in single-digit ms.
-* **GitHub dispatch:** anything else — i.e. `/commands` like `/list`,
- `/reset`, `/digest`, `/why`, `/stats`, `/help` — fires
+* **GitHub dispatch:** anything else — i.e. `/commands` like
+ `/reset`, `/digest`, `/stats`, `/help` — fires
  `repository_dispatch` so `process_update.yml` runs
  `python main.py --apply-update`. Commands need the full Python env to
  build multi-line Markdown messages or call the recommender.

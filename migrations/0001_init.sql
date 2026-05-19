@@ -44,8 +44,9 @@ CREATE TABLE IF NOT EXISTS sent_ids (
 );
 CREATE INDEX IF NOT EXISTS sent_ids_ts ON sent_ids(sent_ts DESC);
 
--- The most recent daily batch, numbered 1..N (used by /why N and vote callbacks
--- to look up the abstract text for a paper key). Wholly replaced each daily run.
+-- The most recent daily batch, numbered 1..N (used by Worker vote callbacks
+-- to look up the abstract text for a paper key when it isn't in reading_log
+-- yet). Wholly replaced each daily run.
 CREATE TABLE IF NOT EXISTS last_batch (
   position  INTEGER PRIMARY KEY,
   paper_key TEXT NOT NULL,
