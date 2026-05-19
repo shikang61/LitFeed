@@ -763,6 +763,196 @@
       ],
       "sent_ts": "2026-05-19T10:02:54+00:00",
       "status": "sent"
+    },
+    "2605.17334": {
+      "key": "2605.17334",
+      "created_ts": "2026-05-19T12:01:36+00:00",
+      "grok_summary": {
+        "text": "TL;DR: CausalHealth applies causal graph discovery and k-nearest-neighbour transfer entropy to per-cycle voltage, current, temperature and resistance series, then bundles the resulting anomaly scores into Magnitude-shift, Predictive-residual and Complexity-entropy classes to flag lithium-ion battery degradation.\n\nWhy it may matter: Magnitude-shift scores reach 100 % detection with up to 402-cycle lead time on LFP and LCO cells, a Reliability-Weighted Master Health Index extends that lead time, and transfer entropy TE(R → V) correlates with charge-transfer resistance R_ct measured by electrochemical impedance spectroscopy.\n\nBest for: Early anomaly detection in battery time-series data using causal inference methods.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:01:36+00:00"
+      },
+      "text": "Causal Anomaly Detection for Lithium-Ion Battery Degradation\n\nReliable early detection of lithium-ion battery degradation requires health indicators that are physically interpretable and computable from routine cycler telemetry without access to the degradation region. We introduce \\textsc{CausalHealth}, a framework that applies causal graph discovery and $k$-nearest-neighbour transfer entropy to per-cycle voltage, current, temperature, and resistance time series, and organises twelve resulting anomaly scores into three signal-class bundles (Magnitude-shift, Predictive-residual, Complexity-entropy) -- with Isolation Forest reported separately as it falls below the bundle reliability threshold -- to characterise detection sensitivity across ten commissioning fractions (5--30\\,\\%). The Magnitude-shift class achieves 100\\,\\% detection across all seven tested cells spanning LFP (MIT--Stanford MATR) and LCO (NASA PCoE, CALCE CS2) chemistries, with a lead time of up to 402 cycles before conventional capacity-threshold failure on gradual-fade cells. A Reliability-Weighted Master Health Index (RWMHI) -- a cross-bundle fusion of five high-reliability detectors weighted by inverse coefficient of variation -- improves lead time by 15--52 cycles over the class median on long-lived cells while maintaining 100\\,\\% detection. Validation against electrochemical impedance spectroscopy on an NMC prismatic cell provides independent physical grounding: transfer entropy $\\mathrm{TE}(R \\!\\to\\! V)$ correlates with charge-transfer resistance $R_{\\mathrm{ct}}$ (pooled $r = +0.990$; temperature-controlled partial $r = +0.898$), and an Arrhenius analysis of both quantities yields an activation energy consistent with published NMC charge-transfer kinetics. These results are evaluated on seven cells across three benchmark datasets.",
+      "title": "Causal Anomaly Detection for Lithium-Ion Battery Degradation",
+      "url": "https://arxiv.org/abs/2605.17334",
+      "categories": [
+        "cond-mat.mtrl-sci",
+        "cond-mat.stat-mech",
+        "cs.LG",
+        "physics.comp-ph"
+      ],
+      "sent_ts": "2026-05-19T12:01:37+00:00",
+      "status": "sent"
+    },
+    "2605.17393": {
+      "key": "2605.17393",
+      "created_ts": "2026-05-19T12:01:45+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper introduces Heterogeneous Information-Bottleneck Coordination Graphs (HIBCG) for cooperative multi-agent reinforcement learning (MARL), which applies the graph information bottleneck (GIB) to build a group-aware sparse coordination graph whose edges and per-agent message capacities are set by a group-aligned block-diagonal prior and variational compression.\n\nWhy it may matter: It replaces heuristic edge selection with a provably tighter variational bound on topology learning, block-wise objective decomposition, and water-filling capacity allocation.\n\nBest for: MARL researchers working on sparse communication or information-bottleneck methods.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:01:45+00:00"
+      },
+      "text": "Heterogeneous Information-Bottleneck Coordination Graphs for Multi-Agent Reinforcement Learning\n\nCoordination graphs are a central abstraction in cooperative multi-agent reinforcement learning (MARL), yet existing sparse-graph learners lack a theoretically grounded mechanism to decide which edges should exist and how much information each edge should carry. Current methods rely on heuristic criteria that offer no formal guarantee on the learned topology, and no principled way to allocate different communication capacities to structurally different agent relationships. To address this, we propose Heterogeneous Information-Bottleneck Coordination Graphs (HIBCG), which learns a group-aware sparse graph in which both edge existence and message capacity are theoretically justified. With the graph information bottleneck (GIB) serving as the underlying tool, HIBCG first constructs a group-aligned block-diagonal prior that provides a closed-form criterion for edge retention -- determining which edges should exist and at what density per group block -- and then controls per-agent feature bandwidth on the resulting topology, compressing messages to retain only task-relevant content. We prove that the group-aligned prior strictly tightens the variational bound on topology learning, that the objective decomposes per group block, enabling differential edge control, and that capacity allocation follows a water-filling principle.",
+      "title": "Heterogeneous Information-Bottleneck Coordination Graphs for Multi-Agent Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.17393",
+      "categories": [
+        "cs.AI",
+        "cs.LG",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T12:01:46+00:00",
+      "status": "sent"
+    },
+    "2605.17426": {
+      "key": "2605.17426",
+      "created_ts": "2026-05-19T12:01:58+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper trains a multi-agent simulator on pre-intervention human-flow data to model visitor destination choice as a function of location, inter-spot distances, and spot attractiveness, then applies mobility interventions by altering those distances or attractiveness values and measures resulting changes in circulation.\n\nWhy it may matter: On real data from Wakayama Castle Park the multi-layer perceptron (MLP) decision model reproduces post-intervention spatial population distributions with cosine similarity above 0.7.\n\nBest for: Agent-based modeling of pedestrian or crowd flows with machine-learned choice functions.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:01:58+00:00"
+      },
+      "text": "Human-Flow Digital Twin for Predicting the Effects of Mobility Introduction on Visitor Circulation\n\nWe propose a framework for predicting the effects of mobility introduction measures using a human-flow digital twin. This digital twin incorporates a multi-agent simulator that can represent how visitors choose destinations depending on factors such as their current location and the attractiveness of spots. We extract data on how visitors selected destinations with respect to measured pre-intervention human-flow data, inter-spot distances, spot attractiveness, and travel volumes, and use these data to train each agent's decision model of this simulator. The trained decision model is a function that takes a visitor's current state and surrounding environmental information as input and outputs which spot the visitor will move toward next. By expressing mobility introduction measures as changes to inter-point distances or to spot attractiveness, the framework can reproduce human flows with mobility introduction in the multi-agent simulator and thereby quantify effects such as changes in visitor counts and circulation. We evaluated the proposed method using human-flow data measured with and without introducing mobility within Wakayama Castle Park in Japan. When reproducing flows with mobility introduction using a multi-layer perceptron decision model, the cosine similarity of the spatial population distribution exceeded 0.7, confirming that the approach can replicate the flow changes caused by the mobility introduction.",
+      "title": "Human-Flow Digital Twin for Predicting the Effects of Mobility Introduction on Visitor Circulation",
+      "url": "https://arxiv.org/abs/2605.17426",
+      "categories": [
+        "cs.MA",
+        "cs.LG"
+      ],
+      "sent_ts": "2026-05-19T12:01:58+00:00",
+      "status": "sent"
+    },
+    "2605.17724": {
+      "key": "2605.17724",
+      "created_ts": "2026-05-19T12:02:09+00:00",
+      "grok_summary": {
+        "text": "TL;DR: Gradient boosting and LSTM models applied to five-minute OHLCV sequences from MNQ futures yield no statistically significant out-of-sample accuracy above the 51.8% base rate under expanding-window walk-forward validation.\n\nWhy it may matter: The results supply an empirical lower bound showing that four years of single-instrument intraday data are insufficient to extract stable sequential predictive structure for financial ML.\n\nBest for: Researchers evaluating sequential architectures on constrained market datasets.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:02:09+00:00"
+      },
+      "text": "Sequential Structure in Intraday Futures Data: LSTM vs Gradient Boosting on MNQ\n\nThis paper compares gradient boosting and long short-term memory (LSTM) architectures for intraday directional prediction in Micro E-Mini Nasdaq 100 futures (MNQ). Motivated by recent foundation-model research on financial candlestick data, including the Kronos architecture, we test whether five-minute OHLCV bar sequences contain exploitable sequential predictive structure at the scale of a single instrument dataset. Using 944 trading days from 2021-2025, four model configurations are evaluated under strict expanding-window walk-forward validation across three out-of-sample periods. The target variable is whether the session close exceeds the 10:30 AM open by more than ten points. No configuration produces statistically significant out-of-sample accuracy above the 51.8% base rate. Combined OOS accuracies range from 50.00% to 50.89% across gradient boosting variants, while the LSTM achieves 50.59%. Permutation tests yield p-values of 0.135 for the best gradient boosting model and 0.515 for the LSTM, indicating no statistically significant predictive edge. Feature importance instability across walk-forward folds suggests noise fitting rather than stable structural signal capture. The results indicate that four years of single-instrument five-minute OHLCV data are insufficient for reliable sequential ML-based intraday forecasting. The primary contribution is a documented evaluation of a Kronos-inspired architecture on a constrained real-world dataset, providing an empirical lower bound on data scale requirements for sequential financial ML.",
+      "title": "Sequential Structure in Intraday Futures Data: LSTM vs Gradient Boosting on MNQ",
+      "url": "https://arxiv.org/abs/2605.17724",
+      "categories": [
+        "q-fin.TR",
+        "cs.LG",
+        "q-fin.CP",
+        "q-fin.ST"
+      ],
+      "sent_ts": "2026-05-19T12:02:09+00:00",
+      "status": "sent"
+    },
+    "2605.17850": {
+      "key": "2605.17850",
+      "created_ts": "2026-05-19T12:02:21+00:00",
+      "grok_summary": {
+        "text": "TL;DR: URGE (Unbiased Resampling via Girsanov Estimation) performs derivative-free inference-time scaling of diffusion models by attaching multiplicative Girsanov path weights to trajectories and resampling them with sequential Monte Carlo.\n\nWhy it may matter: It removes the repeated score, gradient, Hessian, or PDE evaluations of prior guidance methods while proving equivalence to particle-wise SMC and delivering unbiased terminal distributions.\n\nBest for: diffusion sampling, path-space measures, or gradient-free SMC work.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:02:21+00:00"
+      },
+      "text": "Simple Approximation and Derivative Free Inference-Time Scaling for Diffusion Models via Sequential Monte Carlo on Path Measures\n\niffusion-based generative models increasingly rely on inference-time guidance, adding a drift term or reweighting mixture of experts, to improve sample quality on task-specific objectives. However, most existing techniques require repeated score or gradient evaluations, introducing bias, high computational overhead, or both. We introduce \\texttt{URGE}, Unbiased Resampling via Girsanov Estimation, a derivative-free inference-time scaling algorithm that performs path-wise importance reweighting via a Girsanov change of measure. Instead of computing gradient-based particle weights in previous work, \\texttt{URGE} attaches a simple multiplicative weight to each simulated trajectory and periodically resamples. No score, no Hessian, and no PDE evaluation is required. We establish an equivalence between path-wise and particle-wise SMC: the Girsanov path weight admits a backward conditional expectation that recovers the previous particle-level weights, guaranteeing that both schemes produce the same unbiased terminal law. Empirically, \\texttt{URGE} outperforms existing inference-time guidance baselines on synthetic tests and diffusion-model benchmarks, achieving better generation quality, while being significantly simpler to implement and fully gradient-free.",
+      "title": "Simple Approximation and Derivative Free Inference-Time Scaling for Diffusion Models via Sequential Monte Carlo on Path Measures",
+      "url": "https://arxiv.org/abs/2605.17850",
+      "categories": [
+        "stat.ML",
+        "cs.CV",
+        "cs.LG",
+        "cs.NA",
+        "math.NA",
+        "math.PR"
+      ],
+      "sent_ts": "2026-05-19T12:02:22+00:00",
+      "status": "sent"
+    },
+    "2605.17888": {
+      "key": "2605.17888",
+      "created_ts": "2026-05-19T12:02:30+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper combines a CTA-Swin-UNet (channel-time-attention Swin-UNet) with a multi-time-scale fusion correction strategy to autoregressively predict wall-parallel turbulent planes, then reconstructs full 3D fields via resolvent-based spectral linear stochastic estimation.\n\nWhy it may matter: It reports stable rollouts to ~300 steps and recovery of 3D structures plus energy spectra from planar data, where prior models diverge within tens of steps.\n\nBest for: ML-based long-horizon forecasting of wall-bounded turbulence.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:02:30+00:00"
+      },
+      "text": "Long-horizon prediction of three-dimensional wall-bounded turbulence with CTA-Swin-UNet and resolvent analysis\n\nLong-horizon prediction of three-dimensional (3D) wall-bounded turbulence with machine-learning methods remains a challenging task, due to the rapid accumulation of autoregressive errors and the substantially computational cost. To address these challenges, we present a hybrid machine-learning framework, in which a channel-time-attention Swin-UNet (CTA-Swin-UNet) and a multi-time-scale fusion correction (MTFC) strategy are developed to predict the turbulent flow fields in a wall-parallel plane, with affordable computational cost. Then, 3D flow fields are reconstructed via a resolvent-based spectral linear stochastic estimation (SLSE), rooting from the predicted planar flow. Results show that the CTA-Swin-UNet outperforms the baseline models (LSTM, FNO and traditional Swin-UNet) in both single-step prediction and autoregressive rollouts, indicating the effectiveness of introducing the CTA module into the Swin-UNet architecture. At the same temporal interval, the CTA-Swin-UNet remains stable for approximately 150 rollout steps, while the baseline models fail within 20 to 50 rollout steps. After introducing the MTFC strategy, a longer horizon upto 300 steps is achieved. Using the resolvent-based SLSE reconstruction further recovers the 3D flow structures and energy spectral distributions from the predicted planar inputs, which demonstrates that the proposed framework provides an effective and computationally efficient approach for long-horizon autoregressive prediction of 3D wall-bounded turbulence.",
+      "title": "Long-horizon prediction of three-dimensional wall-bounded turbulence with CTA-Swin-UNet and resolvent analysis",
+      "url": "https://arxiv.org/abs/2605.17888",
+      "categories": [
+        "physics.flu-dyn",
+        "cs.LG"
+      ],
+      "sent_ts": "2026-05-19T12:02:31+00:00",
+      "status": "sent"
+    },
+    "2605.18077": {
+      "key": "2605.18077",
+      "created_ts": "2026-05-19T12:02:40+00:00",
+      "grok_summary": {
+        "text": "TL;DR: LMAC uses an LLM to iteratively design a communication protocol for cooperative MARL that maximizes uniform reconstruction of the underlying state across agents under partial observability.\n\nWhy it may matter: On standard MARL benchmarks it improves state recovery and yields performance gains over prior communication baselines by narrowing inter-agent knowledge differences via an explicit state-awareness criterion.\n\nBest for: MARL researchers focused on learned communication protocols.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:02:40+00:00"
+      },
+      "text": "LLM-Guided Communication for Cooperative Multi-Agent Reinforcement Learning\n\nCommunication is a key component in multi-agent reinforcement learning (MARL) for mitigating partial observability, yet prior approaches often rely on inefficient information exchange or fail to transmit sufficient state information. To address this, we propose LLM-driven Multi-Agent Communication (LMAC), which leverages an LLM's reasoning capability to design a communication protocol that enables all agents to reconstruct the underlying state as accurately and uniformly as possible. LMAC iteratively refines the protocol using an explicit state-awareness criterion, improving state recovery while narrowing differences in agents' knowledge. Experiments on diverse MARL benchmarks show that LMAC improves state reconstruction across agents and yields substantial performance gains over prior communication baselines.",
+      "title": "LLM-Guided Communication for Cooperative Multi-Agent Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.18077",
+      "categories": [
+        "cs.AI",
+        "cs.LG",
+        "cs.MA"
+      ],
+      "sent_ts": "2026-05-19T12:02:41+00:00",
+      "status": "sent"
+    },
+    "2605.16318": {
+      "key": "2605.16318",
+      "created_ts": "2026-05-19T12:02:51+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper examines how action vectors are fed into the hidden-state update of recurrent cells (RNNs) when training RL agents on policies and value functions.\n\nWhy it may matter: Action encoding choices affect state construction in partially observable or long-horizon tasks, yet are rarely ablated in published RL agents.\n\nBest for: RL researchers comparing LSTM/GRU variants or designing new recurrent cells.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:02:51+00:00"
+      },
+      "text": "Investigating Action Encodings in Recurrent Neural Networks in Reinforcement Learning\n\nBuilding and maintaining state to learn policies and value functions is critical for deploying reinforcement learning (RL) agents in the real world. Recurrent neural networks (RNNs) have become a key point of interest for the state-building problem, and several large-scale reinforcement learning agents incorporate recurrent networks. While RNNs have become a mainstay in many RL applications, many key design choices and implementation details responsible for performance improvements are often not reported. In this work, we discuss one axis on which RNN architectures can be (and have been) modified for use in RL. Specifically, we look at how action information can be incorporated into the state update function of a recurrent cell. We discuss several choices in using action information and empirically evaluate the resulting architectures on a set of illustrative domains. Finally, we discuss future work in developing recurrent cells and discuss challenges specific to the RL setting.",
+      "title": "Investigating Action Encodings in Recurrent Neural Networks in Reinforcement Learning",
+      "url": "https://arxiv.org/abs/2605.16318",
+      "categories": [
+        "cs.LG"
+      ],
+      "sent_ts": "2026-05-19T12:02:52+00:00",
+      "status": "sent"
+    },
+    "2605.16319": {
+      "key": "2605.16319",
+      "created_ts": "2026-05-19T12:03:01+00:00",
+      "grok_summary": {
+        "text": "TL;DR: The paper presents a residual gap-aware transformer that adds participant-level random intercepts from a mixed-effects reference model to transformer residual learning on triplet-tokenized irregular ADNI histories, with a learned nonnegative time-gap penalty inside self-attention, to forecast 24-month CDR-SB change anchored at MCI visits.\n\nWhy it may matter: On 2,600 labeled anchors from 858 ADNI participants it reduces MSE by 13.1% and raises prediction-observation correlation by 26.4% relative to a BIC-selected linear mixed-effects baseline while also beating GRU-D and STraTS under repeated participant-level splits.\n\nBest for: hybrid statistical-ML modeling of irregular longitudinal clinical time series.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:03:01+00:00"
+      },
+      "text": "Forecasting Medium-Horizon Alzheimer's Disease Progression: Residual Gap-Aware Transformers for 24-Month CDR-SB Change from ADNI Clinical and Biomarker Histories\n\nMedium-horizon Alzheimer's disease progression prediction is difficult because future clinical scores can remain tied to baseline severity, while biomarker histories are irregular and incompletely observed. We develop an anchor-based analysis of 24-month Clinical Dementia Rating Sum of Boxes (CDR-SB) change using harmonized Alzheimer's Disease Neuroimaging Initiative (ADNI) tables. Each labeled sample is anchored at a mild cognitive impairment visit, uses only clinical and biomarker history observed at or before that anchor, and defines the response as CDR-SB at the future visit closest to 24 months within an 18--30 month window minus anchor CDR-SB. The analytic cohort contains 2,600 labeled anchors from 858 participants and 7,276 longitudinal rows. We propose a residual gap-aware transformer that combines a mixed-effects statistical reference with transformer-based residual learning from pre-anchor clinical and biomarker histories. The model uses participant-level random intercepts in the mixed-effects reference, observation-level triplet tokenization for irregular histories, and a learned nonnegative time-gap penalty inside self-attention. We compare the proposed model with a Bayesian-information-criterion-selected linear mixed-effects baseline, GRU-D, and STraTS under repeated participant-level train--test splits. Across five participant-level random seeds, the proposed model achieves the best mean test performance across all reported metrics, reducing MSE by 13.1% and increasing prediction--observation correlation by 26.4% relative to the mixed-effects baseline. It also improves over both GRU-D and STraTS in mean error and correlation. These results show that statistical anchoring and gap-aware residual learning provide a useful structure for medium-horizon Alzheimer's disease progression prediction.",
+      "title": "Forecasting Medium-Horizon Alzheimer's Disease Progression: Residual Gap-Aware Transformers for 24-Month CDR-SB Change from ADNI Clinical and Biomarker Histories",
+      "url": "https://arxiv.org/abs/2605.16319",
+      "categories": [
+        "cs.LG",
+        "stat.AP",
+        "stat.ML"
+      ],
+      "sent_ts": "2026-05-19T12:03:02+00:00",
+      "status": "sent"
+    },
+    "2605.16320": {
+      "key": "2605.16320",
+      "created_ts": "2026-05-19T12:03:13+00:00",
+      "grok_summary": {
+        "text": "TL;DR: AdaGraph performs clustering entirely inside a kNN graph (k-nearest-neighbor graph) under the Structure-Centric Machine Learning (SC-ML) paradigm, using Graph-SCOPE as its topology-based validity index and the SLCD (Sample-Learn-Calibrate-Deploy) deployment scheme.\n\nWhy it may matter: On d=10–5000 synthetic benchmarks it reports mean ARI=0.900 and Kendall tau >=0.92 with ground truth, and on 145-dimensional Magpie features for superconductors and perovskites it yields the highest Graph-SCOPE scores among tested methods.\n\nBest for: High-dimensional scientific clustering where Euclidean distances fail and k is unknown.",
+        "model": "grok-4.3",
+        "ts": "2026-05-19T12:03:13+00:00"
+      },
+      "text": "AdaGraph: A Graph-Native Clustering Algorithm That Overcomes the Curse of Dimensionality and Enables Scientific Discovery\n\nWe present AdaGraph, a graph-native clustering algorithm born from the Structure-Centric Machine Learning (SC-ML) paradigm -- a new field of unsupervised learning that replaces geometry-centric (distance-based) computation with structure-centric (topology-based) computation, fundamentally dissolving the curse of dimensionality. AdaGraph operates entirely within the kNN graph topology, a representation that retains meaningful relational structure in arbitrarily high dimensions where Euclidean distance metrics become uninformative. AdaGraph requires no a priori specification of the number of clusters k, handles noise natively, and scales via the SLCD (Sample-Learn-Calibrate-Deploy) prototype-deployment framework. As its unsupervised tuning objective, AdaGraph pairs with Graph-SCOPE, the topology-based cluster validity index introduced as a separate SC-ML contribution. On 10 synthetic benchmarks spanning d=10 to d=5000, Graph-SCOPE achieves mean ARI=0.900 and correctly selects k on 9/10 datasets -- outperforming Silhouette, Davies-Bouldin, and Calinski-Harabasz -- while maintaining Kendall tau >= 0.92 with ground-truth cluster quality across all dimensionalities (Silhouette: tau ~= 0.46). We validate AdaGraph across three scientific domains: (1) gene co-expression discovery in hepatocellular carcinoma (GSE14520, 10,000 genes, 488 patients, no dimensionality reduction), where AdaGraph identifies condition-specific gene modules that WGCNA, ICA, NMF, and Spectral Biclustering fail to resolve; (2) natural language text clustering, where AdaGraph achieves ARI=0.751 on 20NG-6cat versus HDBSCAN's 0.464 (62% relative improvement); (3) materials science clustering of superconductors (145-dimensional Magpie features), perovskites, and JARVIS-DFT materials, where AdaGraph achieves the highest Graph-SCOPE on all three datasets.",
+      "title": "AdaGraph: A Graph-Native Clustering Algorithm That Overcomes the Curse of Dimensionality and Enables Scientific Discovery",
+      "url": "https://arxiv.org/abs/2605.16320",
+      "categories": [
+        "cs.LG",
+        "cs.AI"
+      ],
+      "sent_ts": "2026-05-19T12:03:14+00:00",
+      "status": "sent"
     }
   }
 }
