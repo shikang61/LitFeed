@@ -9,21 +9,14 @@ Each run:
 
 Commands (owner only):
   /list                  → show current categories
-  /add_cat <arxiv.cat>   → add arXiv category
-  /rm_cat <arxiv.cat>    → remove arXiv category
   /reset                 → restore defaults
-  /like N [N ...]        → like papers by number from the latest batch
-  /dislike N [N ...]     → dislike papers by number from the latest batch
-  /later N [N …]         → save papers for later reading
-  /read N [N …]          → mark papers as read
-  /skip N [N …]          → mark papers as skipped + disliked
-  /note N <text>         → attach a note to a paper from the latest batch
-  /queue                 → show saved/unread papers
-  /notes [query]         → search saved notes
   /digest                → send a weekly-style reading digest now
   /why N                 → explain why paper N matched your profile
   /stats                 → show vote counts + filter status
   /help                  → command list
+
+Inline-keyboard buttons on each paper alert: 👍 Like, 👎 Dislike, Read
+(forwards to the To Read group), and Delete.
 """
 
 import argparse
@@ -212,7 +205,7 @@ def _title_from_text(text):
 
 def _ensure_paper_log_entry(log, key, text=None, title=None, url=None, categories=None, score=None):
     papers = log.setdefault("papers", {})
-    entry = papers.setdefault(key, {"key": key, "created_ts": _now_iso(), "notes": []})
+    entry = papers.setdefault(key, {"key": key, "created_ts": _now_iso()})
     if text and not entry.get("text"):
         entry["text"] = text
     if title or text:
@@ -223,7 +216,6 @@ def _ensure_paper_log_entry(log, key, text=None, title=None, url=None, categorie
         entry["categories"] = list(categories)
     if score is not None and not math.isnan(score):
         entry["score"] = round(float(score), 4)
-    entry.setdefault("notes", [])
     return entry
 
 
@@ -246,14 +238,6 @@ def record_sent_paper(log, paper, score=None):
 def update_reading_status(log, key, text, status, score=None):
     entry = _ensure_paper_log_entry(log, key, text=text, score=score)
     entry["status"] = status
-    entry["status_ts"] = _now_iso()
-    return entry
-
-
-def add_paper_note(log, key, text, note):
-    entry = _ensure_paper_log_entry(log, key, text=text)
-    entry.setdefault("notes", []).append({"text": note, "ts": _now_iso()})
-    entry["status"] = entry.get("status", "saved")
     entry["status_ts"] = _now_iso()
     return entry
 
@@ -340,8 +324,13 @@ def grok_summarize_paper(paper):
     api_base = os.environ.get("GROK_API_BASE") or GROK_API_BASE
     url = f"{api_base.rstrip('/')}/chat/completions"
     prompt = (
-        "Summarize this arXiv paper for a physics PhD student who wants to decide "
-        "whether to read it. Use this exact structure, keep it concise, and avoid hype:\n\n"
+        "Summarize this arXiv paper for a physics PhD student deciding whether to read it. "
+        "Optimize for fast scanning: short, plain sentences with no hype. "
+        "Do not omit important technical terms — keep the precise jargon (methods, models, "
+        "observables) that tells a reader what kind of paper this is. The first time any "
+        "acronym or specialist term appears, gloss it inline in parentheses, e.g. "
+        "'GRB (gamma-ray burst)' or 'reconnection (magnetic field-line rearrangement)'. "
+        "After the first mention you may use the short form. Use this exact structure:\n\n"
         "TL;DR: <one sentence>\n"
         "Why it may matter: <one sentence>\n"
         "Best for: <short phrase>\n\n"
@@ -362,7 +351,7 @@ def grok_summarize_paper(paper):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": 220,
+        "max_tokens": 280,
     }
     try:
         resp = requests.post(
@@ -414,36 +403,14 @@ def handle_command(text, cfg, votes, reading_log):
         return False, (
             "*Commands*\n"
             "/list — show categories\n"
-            "/add\\_cat <arxiv.cat> — add category\n"
-            "/rm\\_cat <arxiv.cat> — remove category\n"
             "/reset — restore default categories\n"
-            "/like N [N …] — like papers by batch number\n"
-            "/dislike N [N …] — dislike papers by batch number\n"
-            "/later N [N …] — save papers for later reading\n"
-            "/read N [N …] — mark papers as read\n"
-            "/skip N [N …] — skip papers and train them as negative examples\n"
-            "/note N <text> — attach a note to a latest-batch paper\n"
-            "/queue — show saved/unread papers\n"
-            "/notes [query] — search your paper notes\n"
             "/digest — send a weekly-style reading digest now\n"
             "/why N — explain why a paper matched\n"
             "/stats — vote counts + filter status\n"
-            "/help — this message"
+            "/help — this message\n\n"
+            "_Vote and triage with the buttons under each paper:_ "
+            "👍 / 👎 / Read / Delete."
         )
-
-    if cmd in ("/later", "/read", "/skip"):
-        changed, reply = handle_reading_status_command(text, votes, reading_log)
-        return changed, reply
-
-    if cmd == "/note":
-        changed, reply = handle_note_command(text, votes, reading_log)
-        return changed, reply
-
-    if cmd == "/queue":
-        return False, format_reading_queue(reading_log)
-
-    if cmd == "/notes":
-        return False, format_notes(reading_log, arg)
 
     if cmd == "/digest":
         return False, format_weekly_digest(votes, reading_log)
@@ -476,22 +443,6 @@ def handle_command(text, cfg, votes, reading_log):
             f"Selection threshold: `{floor:.3f}`\n"
             f"Top matched terms: {reason_text}"
         )
-
-    if cmd == "/add_cat":
-        if not arg:
-            return False, "Usage: `/add_cat <arxiv.category>`"
-        if arg in cfg["categories"]:
-            return False, f"Category already present: `{arg}`"
-        cfg["categories"].append(arg)
-        return True, f"Added category: `{arg}`"
-
-    if cmd == "/rm_cat":
-        if not arg:
-            return False, "Usage: `/rm_cat <arxiv.category>`"
-        if arg not in cfg["categories"]:
-            return False, f"Category not found: `{arg}`"
-        cfg["categories"].remove(arg)
-        return True, f"Removed category: `{arg}`"
 
     if cmd == "/reset":
         cfg["categories"] = list(DEFAULT_CATEGORIES)
@@ -568,43 +519,6 @@ def _sorted_papers(reading_log):
     )
 
 
-def format_reading_queue(reading_log, limit=10):
-    queue = [
-        entry for entry in _sorted_papers(reading_log)
-        if entry.get("status") in ("saved", "sent")
-    ][:limit]
-    if not queue:
-        return "*Reading queue*\n_empty_"
-    lines = ["*Reading queue*"]
-    for i, entry in enumerate(queue, start=1):
-        title = escape_markdown(entry.get("title") or _title_from_text(entry.get("text", "")) or entry["key"])
-        status = entry.get("status", "sent")
-        lines.append(f"{i}. `{entry['key']}` [{status}] {title}")
-    return "\n".join(lines)
-
-
-def format_notes(reading_log, query="", limit=10):
-    query_lc = query.lower()
-    matches = []
-    for entry in _sorted_papers(reading_log):
-        haystack = f"{entry.get('title', '')}\n{entry.get('text', '')}".lower()
-        for note in entry.get("notes", []):
-            note_text = note.get("text", "")
-            if query_lc and query_lc not in haystack and query_lc not in note_text.lower():
-                continue
-            matches.append((entry, note_text))
-            break
-        if len(matches) >= limit:
-            break
-    if not matches:
-        return "*Notes*\n_no matching notes yet_"
-    lines = ["*Notes*"]
-    for entry, note_text in matches:
-        title = escape_markdown(entry.get("title") or _title_from_text(entry.get("text", "")) or entry["key"])
-        lines.append(f"• `{entry['key']}` {title}\n  _{escape_markdown(note_text)}_")
-    return "\n".join(lines)
-
-
 def format_weekly_digest(votes, reading_log):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=7)
@@ -669,102 +583,6 @@ def _record_vote(votes, key, text, action):
     })
 
 
-def handle_vote_command(text, votes):
-    """Handle `/like` or `/dislike` followed by batch numbers from the latest
-    run. Returns (votes_changed: bool, reply: str)."""
-    parts = text.strip().split()
-    action = "like" if parts[0].lower().startswith("/like") else "dislike"
-    nums = parts[1:]
-    if not nums:
-        return False, f"Usage: `/{action} <number> [number …]` — numbers from the latest batch."
-
-    last_batch = votes.get("last_batch", {})
-    if not last_batch:
-        return False, "No batch to vote on yet — wait for the next run."
-
-    recorded, missing = [], []
-    for n in nums:
-        entry = last_batch.get(n)
-        key = None
-        paper_text_value = None
-        if isinstance(entry, dict):
-            key = entry.get("key")
-            paper_text_value = entry.get("text")
-
-        if not key or not paper_text_value:
-            missing.append(n)
-            continue
-        _record_vote(votes, key, paper_text_value, action)
-        recorded.append(n)
-
-    emoji = "👍" if action == "like" else "👎"
-    lines = []
-    if recorded:
-        lines.append(f"{emoji} recorded for: {', '.join(recorded)}")
-    if missing:
-        lines.append(f"⚠️ not found: {', '.join(missing)}")
-    return bool(recorded), "\n".join(lines) or "Nothing recorded."
-
-
-def _latest_batch_entry(votes, n):
-    entry = votes.get("last_batch", {}).get(n)
-    if not isinstance(entry, dict):
-        return None
-    key = entry.get("key")
-    text_value = entry.get("text")
-    if not key or not text_value:
-        return None
-    return entry
-
-
-def handle_reading_status_command(text, votes, reading_log):
-    """Handle `/later`, `/read`, and `/skip` for latest-batch numbers."""
-    parts = text.strip().split()
-    cmd = parts[0].lower()
-    nums = parts[1:]
-    if not nums:
-        return False, f"Usage: `{cmd} <number> [number …]` — numbers from the latest batch."
-
-    status_by_cmd = {"/later": "saved", "/read": "read", "/skip": "skipped"}
-    status = status_by_cmd[cmd]
-    verb = {"saved": "saved for later", "read": "marked read", "skipped": "skipped"}[status]
-    recorded, missing = [], []
-    for n in nums:
-        entry = _latest_batch_entry(votes, n)
-        if entry is None:
-            missing.append(n)
-            continue
-        update_reading_status(
-            reading_log,
-            entry["key"],
-            entry["text"],
-            status,
-            score=entry.get("score"),
-        )
-        if status == "skipped":
-            _record_vote(votes, entry["key"], entry["text"], "dislike")
-        recorded.append(n)
-
-    lines = []
-    if recorded:
-        lines.append(f"{verb}: {', '.join(recorded)}")
-    if missing:
-        lines.append(f"not found: {', '.join(missing)}")
-    return bool(recorded), "\n".join(lines) or "Nothing recorded."
-
-
-def handle_note_command(text, votes, reading_log):
-    parts = text.strip().split(maxsplit=2)
-    if len(parts) < 3:
-        return False, "Usage: `/note <number> <note>` — number from the latest batch."
-    _, n, note = parts
-    entry = _latest_batch_entry(votes, n)
-    if entry is None:
-        return False, f"Paper `{n}` not found in the latest batch."
-    add_paper_note(reading_log, entry["key"], entry["text"], note.strip())
-    return True, f"Note saved for `{n}`."
-
-
 def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handled=False):
     """Record owner per-paper vote/reading buttons. Returns (votes_changed, reading_changed).
 
@@ -777,15 +595,7 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
     valid_habit = (
         len(parts) == 3
         and parts[0] == "h"
-        and parts[1] in (
-            "later",
-            "read",
-            "skip",
-            "read_to_group",
-            "delete",
-            "confirm_delete",
-            "cancel_delete",
-        )
+        and parts[1] in ("read_to_group", "delete", "confirm_delete", "cancel_delete")
     )
     if not valid_vote and not valid_habit:
         if not webhook_handled:
@@ -847,6 +657,7 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not delete message.")
         return False, False
 
+    # kind == "v" — like/dislike vote
     text_value = _lookup_paper_text(votes, key)
     if not text_value:
         if not webhook_handled:
@@ -857,26 +668,11 @@ def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handle
             )
         return False, False
 
-    if kind == "v":
-        _record_vote(votes, key, text_value, action)
-        toast = f"Recorded {'👍' if action == 'like' else '👎'}"
-        votes_changed = True
-        reading_changed = False
-    else:
-        status = {"later": "saved", "read": "read", "skip": "skipped"}[action]
-        update_reading_status(reading_log, key, text_value, status)
-        if action == "skip":
-            _record_vote(votes, key, text_value, "dislike")
-        toast = {"later": "Saved for later", "read": "Marked read", "skip": "Skipped"}[action]
-        votes_changed = action == "skip"
-        reading_changed = True
+    _record_vote(votes, key, text_value, action)
     if not webhook_handled:
-        telegram_call(
-            token, "answerCallbackQuery",
-            callback_query_id=cb_id,
-            text=toast,
-        )
-    return votes_changed, reading_changed
+        toast = f"Recorded {'👍' if action == 'like' else '👎'}"
+        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text=toast)
+    return True, False
 
 
 def _lookup_paper_text(votes, key):
@@ -935,20 +731,10 @@ def _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhoo
     text = msg.get("text", "")
     if not text.startswith("/"):
         return False, False, False
-    command = text.strip().split()[0].lower()
-    if command in ("/like", "/dislike"):
-        changed, reply = handle_vote_command(text, votes)
-        send_message(token, chat_id, reply)
-        return False, changed, False
-
     mutated, reply = handle_command(text, cfg, votes, reading_log)
     if reply:
         send_message(token, chat_id, reply)
-    if not mutated:
-        return False, False, False
-    if command in ("/later", "/read", "/skip", "/note"):
-        return False, command == "/skip", True
-    return True, False, False
+    return mutated, False, False
 
 
 def apply_webhook_update(token, chat_id, update, webhook_handled, cfg, votes, reading_log):
@@ -1145,6 +931,10 @@ def format_paper(paper, index, grok_summary=None):
 def vote_keyboard(key):
     return {
         "inline_keyboard": [
+            [
+                {"text": "👍 Like", "callback_data": f"v:like:{key}"},
+                {"text": "👎 Dislike", "callback_data": f"v:dislike:{key}"},
+            ],
             [
                 {"text": "Read", "callback_data": f"h:read_to_group:{key}"},
             ],

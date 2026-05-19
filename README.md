@@ -15,13 +15,14 @@ GitHub Actions cron ──► daily_papers.yml ── arXiv RSS → preference f
 GitHub Actions cron ──► weekly_digest.yml ── reading-log digest → Telegram
 ```
 
-The Cloudflare Worker (see `worker/`) handles `Read` / `Delete` button taps in
-under a second by calling the Telegram Bot API directly. State-mutating updates
-(`/like`, `/dislike`, `/later`, `/note`, …) are forwarded to GitHub via
-`repository_dispatch`; `process_update.yml` runs `python main.py --apply-update`
-and commits the new state files. The webhook is optional — if you skip the
-Worker, re-enable the cron in `poll_commands.yml` and unset `LITFEED_DISABLE_POLL`
-on the other workflows to fall back to 5-minute `getUpdates` polling.
+The Cloudflare Worker (see `worker/`) handles `Read` / `Delete` / 👍 / 👎
+button taps in under a second by calling the Telegram Bot API directly.
+State-mutating updates (vote callbacks, `Read`-button forwards, configuration
+commands like `/digest`) are forwarded to GitHub via `repository_dispatch`;
+`process_update.yml` runs `python main.py --apply-update` and commits the new
+state files. The webhook is optional — if you skip the Worker, re-enable the
+cron in `poll_commands.yml` and unset `LITFEED_DISABLE_POLL` on the other
+workflows to fall back to 5-minute `getUpdates` polling.
 
 ## Setup
 
@@ -75,23 +76,14 @@ set `LITFEED_DISABLE_POLL=1` to skip the polling step.
 
 ## Customising via Telegram
 
-Send commands directly to your bot. They are processed at the start of the next scheduled run (max latency ≈ 12h with the default twice-daily cron), then `config.json` is committed back to the repo by the workflow.
+Voting and triage are done with the inline buttons under each paper alert (see *Reading habit loop* below). Configuration commands are sent directly to the bot and processed by the next workflow run (instant via the Cloudflare Worker; otherwise on the next 5-minute poll cycle).
 
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
 | `/list`                | Show current categories            |
-| `/add_cat <arxiv.cat>` | Add arXiv category (e.g. `cs.LG`)   |
-| `/rm_cat <arxiv.cat>`  | Remove arXiv category               |
 | `/reset`               | Restore default categories         |
-| `/like N [N …]`        | Like papers by number from the latest batch |
-| `/dislike N [N …]`     | Dislike papers by number from the latest batch |
-| `/later N [N …]`       | Save papers for later reading |
-| `/read N [N …]`        | Mark papers as read |
-| `/skip N [N …]`        | Skip papers and train them as negative examples |
-| `/note N <text>`       | Attach a note to a paper from the latest batch |
-| `/queue`               | Show saved/unread papers |
-| `/notes [query]`       | Search paper notes |
 | `/digest`              | Send a weekly-style reading digest immediately |
+| `/why N`               | Explain why paper `N` matched your profile |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |
 
@@ -100,24 +92,19 @@ Send commands directly to your bot. They are processed at the start of the next 
 Votes are stored in `votes.json` and used to train a TF-IDF model (sklearn) that scores future papers by `cos(paper, liked_centroid) − cos(paper, disliked_centroid)`. Papers scoring `> 0` (closer to liked than disliked) are sent.
 
 - **Cold start**: while either side has fewer than `MIN_VOTES_PER_SIDE` (default 10) votes, the filter is disabled and every paper is sent. Use this phase to seed the model.
-- **Vote anytime**: the poll workflow (every 5 min) records votes via Telegram callbacks. You can re-vote on the same paper; the latest vote wins.
-- **Batch vote**: each paper in the daily run is numbered (`[1]`, `[2]`, …). Reply with `/like 1 3 5` and/or `/dislike 2 4` to vote on several at once in one message — the numbers refer to the most recent batch. Faster than tapping each paper's button, and one message = one poll cycle.
-- **Latest batch**: the most recent batch is stored compactly in `votes.json` so batch commands and callback buttons can reconstruct the document for training.
+- **Vote anytime**: tap 👍 / 👎 under any paper. Votes are recorded instantly via the Cloudflare Worker (or on the next 5-minute poll if you skipped the Worker). You can re-vote on the same paper; the latest vote wins.
+- **Latest batch**: each daily run is numbered (`[1]`, `[2]`, …) and the number→paper map is stored compactly in `votes.json`, so the recommender and `/why N` can reconstruct the document later.
 - **Serendipity slot**: when the filter is active, one daily slot is reserved for a near-miss paper so the feed can still surface adjacent ideas instead of collapsing too narrowly around old likes.
 - **Priority mix**: each 10-paper batch targets 7 papers from priority categories (`cs.MA`, `math.NA`, `math-ph`, `physics.comp-ph`, `physics.flu-dyn`, `physics.plasm-ph`, `q-fin.CP`, `q-fin.PM`, `q-fin.TR`, `q-fin.RM`) and 3 papers from the remaining configured categories when available.
 
 ## Reading habit loop
 
-LitFeed keeps a separate `reading_log.json` state file. Daily paper messages include `Read` and `Delete` buttons:
+LitFeed keeps a separate `reading_log.json` state file. Each paper alert carries four inline buttons:
 
-- `Read` forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
-- `Delete` first asks for confirmation, then deletes the Telegram message.
-- `/later N [N …]` saves papers to your queue.
-- `/read N [N …]` marks papers as read.
-- `/skip N [N …]` marks papers as skipped and records them as negative training examples.
-- `/note N <text>` adds a lightweight literature note to paper `N` from the latest batch.
-- `/queue` and `/notes [query]` retrieve your saved papers and notes from Telegram.
-- `/digest` sends a weekly-style digest with saved/read/skipped counts, recurring topics, an unread queue, and one deep-read pick.
+- **👍 Like** / **👎 Dislike** — record the vote in `votes.json`.
+- **Read** — forwards the paper message to the group configured by `LITFEED_TO_READ_CHAT_ID`, such as your `LitFeed - To Read` group, and marks `status=saved` in `reading_log.json`. Add the bot to that group first, then use Telegram `getUpdates` to find the group's numeric chat ID.
+- **Delete** — asks for confirmation, then removes the Telegram message.
+- `/digest` sends a weekly-style digest with saved counts, recurring topics, an unread queue, and one deep-read pick.
 
 The `Weekly Reading Digest` workflow runs once per week and calls `python main.py --weekly-digest`.
 

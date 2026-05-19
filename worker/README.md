@@ -10,11 +10,12 @@ under a second:
 
 | Action                | Where it runs                                                    |
 | --------------------- | ---------------------------------------------------------------- |
+| **👍 / 👎 buttons**   | Worker answers the callback with a toast, then fires `repository_dispatch` so `votes.json` is updated in GitHub. |
 | **Read** button       | Worker forwards the message to your "To Read" group, then fires `repository_dispatch` so `reading_log.json` is marked `saved` in GitHub. |
 | **Delete** button     | Worker swaps the keyboard to confirm/cancel — no GitHub round-trip. |
 | **Confirm delete**    | Worker calls `deleteMessage` on the Telegram API directly. |
-| **Cancel**            | Worker restores the Read/Delete keyboard. |
-| `/like`, `/dislike`, `/later`, `/read`, `/skip`, `/note`, `/add_cat`, `/rm_cat`, … | Worker fires `repository_dispatch`; `process_update.yml` runs `python main.py --apply-update` and commits state. |
+| **Cancel**            | Worker restores the vote/Read/Delete keyboard. |
+| `/list`, `/reset`, `/digest`, `/why`, `/stats`, `/help` | Worker fires `repository_dispatch`; `process_update.yml` runs `python main.py --apply-update` and commits state. |
 
 ## One-time setup
 

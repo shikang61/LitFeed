@@ -47,22 +47,23 @@ lazily so `--commands-only` runs don't need it.
 
 ## Telegram Commands (owner only)
 
-`/list`, `/add_cat <arxiv.cat>`, `/rm_cat <arxiv.cat>`, `/reset`,
-`/like N [N …]`, `/dislike N [N …]`, `/why N`, `/stats`, `/help`. Non-owner
-senders are ignored.
+`/list`, `/reset`, `/digest`, `/why N`, `/stats`, `/help`. Non-owner senders
+are ignored.
 
-Two ways to vote. Per-paper `v:like:`/`v:dislike:` inline buttons on each run
-message (`handle_callback`). Or batch: each run numbers papers (`[1]`, `[2]`,
-…) and stores the number→paper map in `votes["last_batch"]`; `/like` /
-`/dislike` (`handle_vote_command`) resolve numbers against it. `/why N`
-explains why paper `N` matched your profile.
+Voting and triage are button-only. Each paper alert carries an inline keyboard
+with 👍 Like / 👎 Dislike (`v:like:<key>` / `v:dislike:<key>` callbacks),
+Read (forwards to the To Read group, `h:read_to_group:<key>`), and Delete
+(`h:delete:<key>` → confirm/cancel). The Cloudflare Worker answers each
+callback instantly with a toast and dispatches a `repository_dispatch` event
+so `main.py --apply-update` can mutate `votes.json` / `reading_log.json`
+asynchronously. `/why N` still explains why paper `N` matched your profile.
 
 ## State Files (committed back to the repo by CI)
 
 * `config.json` — `categories`, `last_update_id` (Telegram offset), `sent_ids`
   (dedup ring buffer, capped at `MAX_SENT_IDS`).
 * `votes.json` — `liked`, `disliked` (each `{key, text, ts}`); `last_batch`
-  (batch number → `{key, text}`) for `/like` / `/dislike` and callback votes.
+  (batch number → `{key, text}`) used by callback votes and `/why N`.
   This keeps runtime state compact and avoids long-lived sent caches.
 
 `DEFAULT_CATEGORIES` in `main.py` is the seed list (CS / math / physics /

@@ -3,19 +3,21 @@
  *
  * Telegram delivers each update here. We split work into two paths:
  *
- *   1. Instant (handled in this Worker, sub-second response):
+ *   1. Instant (handled in this Worker, sub-second toast feedback):
+ *      - v:like / v:dislike → answer callback with toast, then dispatch so
+ *        main.py records the vote in votes.json.
  *      - h:read_to_group  → forward the paper message to LITFEED_TO_READ_CHAT_ID
  *      - h:delete         → swap keyboard to confirm/cancel
  *      - h:confirm_delete → delete the message
- *      - h:cancel_delete  → restore the Read/Delete keyboard
+ *      - h:cancel_delete  → restore the vote/Read/Delete keyboard
  *
  *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
  *      .github/workflows/process_update.yml using `python main.py --apply-update`):
- *      - All /commands (e.g. /like, /dislike, /later, /add_cat, …)
- *      - h:read_to_group is ALSO dispatched (with webhook_handled=true) so the
+ *      - All /commands (e.g. /list, /reset, /digest, /why, /stats, /help)
+ *      - v:like / v:dislike are ALSO dispatched (webhook_handled=true) so
+ *        votes.json gets the new entry.
+ *      - h:read_to_group is ALSO dispatched (webhook_handled=true) so
  *        reading_log can be marked "saved".
- *      - Any legacy v:like/v:dislike/h:later/h:read/h:skip callbacks (not
- *        currently emitted by the bot but kept for backward compatibility).
  *
  * Required Worker secrets (set via `wrangler secret put NAME`):
  *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
@@ -75,6 +77,15 @@ async function handleCallback(cb, update, env, ctx) {
   const parts = data.split(":");
   if (parts.length < 3) return false;
   const [kind, action, key] = parts;
+
+  if (kind === "v" && (action === "like" || action === "dislike")) {
+    const toast = action === "like" ? "Recorded 👍" : "Recorded 👎";
+    await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: toast });
+    // Dispatch so main.py records the vote in votes.json.
+    ctx.waitUntil(dispatchToGitHub(env, update, true));
+    return true;
+  }
+
   if (kind !== "h") return false;
 
   const message = cb.message || {};
@@ -150,7 +161,7 @@ async function handleCallback(cb, update, env, ctx) {
     return true;
   }
 
-  // Legacy h:later / h:read / h:skip — main.py mutates state. Dispatch.
+  // Unknown action — let main.py handle (dispatch via fall-through).
   return false;
 }
 
@@ -206,6 +217,10 @@ async function dispatchToGitHub(env, update, webhookHandled) {
 function voteKeyboard(key) {
   return {
     inline_keyboard: [
+      [
+        { text: "👍 Like", callback_data: `v:like:${key}` },
+        { text: "👎 Dislike", callback_data: `v:dislike:${key}` },
+      ],
       [{ text: "Read", callback_data: `h:read_to_group:${key}` }],
       [{ text: "Delete", callback_data: `h:delete:${key}` }],
     ],
