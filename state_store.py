@@ -33,6 +33,7 @@ other::
     append_sent_ids(keys, sent_ts)
     set_last_update_id(n)
     set_categories(categories)         # writes config.json (the only file write)
+    clear_all_state()                  # wipe all D1 tables + kv (/clear)
 """
 
 from __future__ import annotations
@@ -360,6 +361,23 @@ def set_last_update_id(n: int) -> None:
 def set_categories(categories: list[str]) -> None:
     """Persist categories to config.json. The only file write the app ever does."""
     _dump_config_file(list(categories))
+
+
+def clear_all_state() -> None:
+    """Delete all D1 runtime state (votes, reading log, dedup, batch, kv).
+
+    Does not touch ``config.json`` — callers reset categories via
+    :func:`set_categories` / :func:`save_config` when needed.
+    """
+    _d1.batch(
+        [
+            ("DELETE FROM votes", None),
+            ("DELETE FROM reading_log", None),
+            ("DELETE FROM sent_ids", None),
+            ("DELETE FROM last_batch", None),
+            ("DELETE FROM kv", None),
+        ]
+    )
 
 
 # ---------------------------------------------------------------- D1 read helpers

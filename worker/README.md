@@ -21,7 +21,7 @@ under a second:
 | **Cancel**            | Worker restores the vote/Read/Delete keyboard. |
 | `/stats`, `/help` | Worker reads D1 and replies instantly (no GitHub run). |
 | `/digest` | Worker sends “Generating digest…”, then dispatches; `main.py --apply-update` builds the digest from D1. |
-| `/reset` | Worker dispatches; `process_update.yml` runs `main.py` and may commit `config.json`. |
+| `/reset`, `/clear` | Worker dispatches; `process_update.yml` runs `main.py` and may commit `config.json`. |
 
 ## One-time setup
 

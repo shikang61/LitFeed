@@ -9,15 +9,14 @@
  *        vote row in the D1 `votes` table.
  *      - h:read_to_group  → forward the paper message to LITFEED_TO_READ_CHAT_ID
  *        and upsert reading_log.status='saved' in D1.
- *      - h:delete         → swap keyboard to confirm/cancel
- *      - h:confirm_delete → delete the message
- *      - h:cancel_delete  → restore the vote/Read/Delete keyboard
+ *      - h:delete / h:confirm_delete / h:cancel_delete — paper message deletion
+ *      - h:confirm_clear / h:cancel_clear — /clear confirmation (clear dispatches to GitHub)
  *
  *   2. Stateful (forwarded to GitHub via repository_dispatch, processed by
  *      .github/workflows/process_update.yml using `python main.py --apply-update`):
  *      - /stats, /help — answered here (D1 reads + sendMessage).
  *      - /digest — instant ack here, then dispatch; full digest from main.py.
- *      - /reset — dispatch only (mutates config.json in GitHub Actions).
+ *      - /reset, /clear — dispatch only (mutates D1 and/or config.json in GitHub Actions).
  *
  * Required Worker secrets (set via `wrangler secret put NAME`):
  *   TELEGRAM_TOKEN        — Telegram bot token from BotFather
@@ -36,6 +35,68 @@
 const TG_API = "https://api.telegram.org";
 const MIN_VOTES_PER_SIDE = 10;
 const MAX_VOTES_PER_SIDE = 250;
+
+const CLEAR_CONFIRM_TEXT =
+  "*Clear all LitFeed state?*\n\n" +
+  "This permanently removes every vote, reading-history row, " +
+  "sent-paper dedup entry, category preferences, and the last daily batch. " +
+  "Categories will reset to defaults. The recommender goes back to cold start.\n\n" +
+  "_This cannot be undone._";
+
+// Keep in sync with TOPIC_KEYWORDS in main.py (used by /stats and weekly digest).
+const TOPIC_KEYWORDS = {
+  plasma: ["plasma", "tokamak", "fusion", "mhd", "gyrokinetic", "particle-in-cell"],
+  "fluid dynamics": ["fluid", "turbulence", "navier", "stokes", "vorticity", "flow"],
+  PDEs: ["pde", "partial differential", "equation", "finite element", "spectral method"],
+  numerics: ["numerical", "simulation", "solver", "discretization", "monte carlo", "mesh"],
+  "inverse problems": [
+    "inverse problem",
+    "bayesian",
+    "uncertainty",
+    "regularization",
+    "reconstruction",
+  ],
+  optimization: ["optimization", "optimal control", "gradient", "convex", "variational"],
+  "machine learning": [
+    "machine learning",
+    "neural",
+    "transformer",
+    "diffusion",
+    "reinforcement learning",
+  ],
+  quantum: ["quantum", "qubit", "hamiltonian", "spectral triple", "nisq"],
+  finance: ["portfolio", "market", "trading", "risk", "volatility", "option"],
+  "literature tools": ["literature", "retrieval", "scientific", "paper", "citation"],
+};
+
+function inferTopics(text) {
+  const lowered = (text || "").toLowerCase();
+  const matched = [];
+  for (const [topic, keywords] of Object.entries(TOPIC_KEYWORDS)) {
+    if (keywords.some((kw) => lowered.includes(kw))) matched.push(topic);
+  }
+  return matched;
+}
+
+function topTopicsForEntries(entries, limit = 5) {
+  const counts = {};
+  for (const entry of entries) {
+    const blob = `${entry.title || ""}\n${entry.text || ""}`;
+    for (const topic of inferTopics(blob)) {
+      counts[topic] = (counts[topic] || 0) + 1;
+    }
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit);
+}
+
+function formatTopicSummary(entries) {
+  if (!entries.length) return "_not enough reading data yet_";
+  const topics = topTopicsForEntries(entries);
+  if (!topics.length) return "_not enough reading data yet_";
+  return topics.map(([topic, count]) => `\`${topic}\` (${count})`).join(", ");
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -86,6 +147,15 @@ export default {
         ctx.waitUntil(dispatchToGitHub(env, update, false));
         return new Response("OK");
       }
+      if (cmd === "/clear") {
+        await tg(env, "sendMessage", {
+          chat_id: env.CHAT_ID,
+          text: CLEAR_CONFIRM_TEXT,
+          parse_mode: "Markdown",
+          reply_markup: clearConfirmKeyboard(),
+        });
+        return new Response("OK");
+      }
     }
 
     // Fall-through: dispatch to GitHub (/reset, unknown commands, legacy paths).
@@ -117,6 +187,27 @@ async function handleCallback(cb, update, env, ctx) {
   const message = cb.message || {};
   const sourceChatId = message.chat?.id ?? Number(env.CHAT_ID);
   const messageId = message.message_id;
+
+  if (action === "confirm_clear" || action === "cancel_clear") {
+    if (!messageId) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Message unavailable." });
+      return true;
+    }
+    if (action === "cancel_clear") {
+      await tg(env, "editMessageText", {
+        chat_id: sourceChatId,
+        message_id: messageId,
+        text: "Clear cancelled.",
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [] },
+      });
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Cancelled." });
+      return true;
+    }
+    await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Clearing…" });
+    ctx.waitUntil(dispatchToGitHub(env, update, false));
+    return true;
+  }
 
   if (action === "delete") {
     if (!messageId) {
@@ -342,6 +433,17 @@ function deleteConfirmKeyboard(key) {
   };
 }
 
+function clearConfirmKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "Confirm clear", callback_data: "h:confirm_clear:all" },
+        { text: "Cancel", callback_data: "h:cancel_clear:all" },
+      ],
+    ],
+  };
+}
+
 async function handleOwnerCommand(cmd, env) {
   if (cmd === "/help") {
     await sendHelp(env);
@@ -356,6 +458,7 @@ async function sendHelp(env) {
   const text =
     "*Commands*\n" +
     "/reset — restore default categories\n" +
+    "/clear — wipe all state (asks for confirmation)\n" +
     "/digest — send a weekly-style reading digest now\n" +
     "/stats — vote counts + filter status\n" +
     "/help — this message\n\n" +
@@ -389,6 +492,11 @@ async function sendStats(env) {
       counts[row.status || "sent"] = Number(row.n ?? 0);
     }
 
+    const meaningfulRows = await env.DB.prepare(
+      "SELECT title, text FROM reading_log WHERE status IN ('saved', 'read')"
+    ).all();
+    const topics = formatTopicSummary(meaningfulRows.results || []);
+
     const prefs = await loadCategoryPreferences(env);
     let prefLine = "";
     if (Object.keys(prefs).length) {
@@ -408,7 +516,8 @@ async function sendStats(env) {
       `*Reading*\n` +
       `Saved: ${counts.saved ?? 0}\n` +
       `Read: ${counts.read ?? 0}\n` +
-      `Skipped: ${counts.skipped ?? 0}\n` +
+      `Skipped: ${counts.skipped ?? 0}\n\n` +
+      `*Topics:* ${topics}` +
       prefLine;
     await tg(env, "sendMessage", { chat_id: env.CHAT_ID, text, parse_mode: "Markdown" });
   } catch (e) {

@@ -84,6 +84,7 @@ Voting and triage are done with the inline buttons under each paper alert (see *
 | Command                | Effect                              |
 |------------------------|-------------------------------------|
 | `/reset`               | Restore default categories         |
+| `/clear`               | Wipe all D1 state and reset categories (confirmation required) |
 | `/digest`              | Send a weekly-style reading digest immediately |
 | `/stats`               | Vote counts + filter status         |
 | `/help`                | Show command list                   |

@@ -54,7 +54,7 @@ jobs:
 
       - name: Commit state changes
         # The only file this run can mutate is config.json, and only on
-        # /reset (which rewrites categories). safe_state_push.sh exits
+        # /reset or /clear confirm (which rewrites categories). safe_state_push.sh exits
         # cleanly when there's nothing to commit, so it's a no-op for
         # every other command.
         run: >-
