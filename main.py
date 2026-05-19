@@ -765,8 +765,12 @@ def handle_note_command(text, votes, reading_log):
     return True, f"Note saved for `{n}`."
 
 
-def handle_callback(token, chat_id, callback, votes, reading_log):
-    """Record owner per-paper vote/reading buttons. Returns (votes_changed, reading_changed)."""
+def handle_callback(token, chat_id, callback, votes, reading_log, webhook_handled=False):
+    """Record owner per-paper vote/reading buttons. Returns (votes_changed, reading_changed).
+
+    When ``webhook_handled`` is True, the Cloudflare Worker has already performed
+    Telegram-side actions for this callback (forwarding, deletion, keyboard edits,
+    answerCallbackQuery). We skip those and only mutate state files."""
     cb_id = callback["id"]
     parts = callback.get("data", "").split(":", 2)
     valid_vote = len(parts) == 3 and parts[0] == "v" and parts[1] in ("like", "dislike")
@@ -784,7 +788,8 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
         )
     )
     if not valid_vote and not valid_habit:
-        telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
+        if not webhook_handled:
+            telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id)
         return False, False
     kind, action, key = parts
 
@@ -793,6 +798,11 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
     source_chat_id = message.get("chat", {}).get("id") or chat_id
 
     if kind == "h" and action == "read_to_group":
+        text_value = _lookup_paper_text(votes, key)
+        if webhook_handled:
+            if text_value:
+                update_reading_status(reading_log, key, text_value, "saved")
+            return False, bool(text_value)
         target_chat_id = os.environ.get("LITFEED_TO_READ_CHAT_ID")
         if not target_chat_id:
             telegram_call(
@@ -810,18 +820,15 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not forward.")
             return False, False
 
-        text_value = None
-        for entry in votes.get("last_batch", {}).values():
-            if isinstance(entry, dict) and entry.get("key") == key:
-                text_value = entry.get("text")
-                if text_value:
-                    break
         if text_value:
             update_reading_status(reading_log, key, text_value, "saved")
         telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Forwarded to To Read.")
         return False, bool(text_value)
 
     if kind == "h" and action in ("delete", "confirm_delete", "cancel_delete"):
+        # No state mutation; the Worker handles these entirely in webhook mode.
+        if webhook_handled:
+            return False, False
         if not message_id:
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Message unavailable.")
             return False, False
@@ -840,19 +847,14 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
             telegram_call(token, "answerCallbackQuery", callback_query_id=cb_id, text="Could not delete message.")
         return False, False
 
-    text_value = None
-    # Primary source: latest batch payload (small and durable).
-    for entry in votes.get("last_batch", {}).values():
-        if isinstance(entry, dict) and entry.get("key") == key:
-            text_value = entry.get("text")
-            if text_value:
-                break
+    text_value = _lookup_paper_text(votes, key)
     if not text_value:
-        telegram_call(
-            token, "answerCallbackQuery",
-            callback_query_id=cb_id,
-            text="Paper context expired; vote from latest batch.",
-        )
+        if not webhook_handled:
+            telegram_call(
+                token, "answerCallbackQuery",
+                callback_query_id=cb_id,
+                text="Paper context expired; vote from latest batch.",
+            )
         return False, False
 
     if kind == "v":
@@ -868,12 +870,22 @@ def handle_callback(token, chat_id, callback, votes, reading_log):
         toast = {"later": "Saved for later", "read": "Marked read", "skip": "Skipped"}[action]
         votes_changed = action == "skip"
         reading_changed = True
-    telegram_call(
-        token, "answerCallbackQuery",
-        callback_query_id=cb_id,
-        text=toast,
-    )
+    if not webhook_handled:
+        telegram_call(
+            token, "answerCallbackQuery",
+            callback_query_id=cb_id,
+            text=toast,
+        )
     return votes_changed, reading_changed
+
+
+def _lookup_paper_text(votes, key):
+    for entry in votes.get("last_batch", {}).values():
+        if isinstance(entry, dict) and entry.get("key") == key:
+            text_value = entry.get("text")
+            if text_value:
+                return text_value
+    return None
 
 
 def process_telegram_updates(token, chat_id, cfg, votes, reading_log):
@@ -892,47 +904,65 @@ def process_telegram_updates(token, chat_id, cfg, votes, reading_log):
 
     for upd in updates:
         cfg["last_update_id"] = max(cfg["last_update_id"], upd.get("update_id", 0))
-
-        cb = upd.get("callback_query")
-        if cb:
-            sender = cb.get("from", {}).get("id")
-            if sender != owner_id:
-                continue
-            vote_mutated, reading_mutated = handle_callback(token, chat_id, cb, votes, reading_log)
-            if vote_mutated:
-                votes_changed = True
-            if reading_mutated:
-                reading_changed = True
-            continue
-
-        msg = upd.get("message") or upd.get("edited_message")
-        if not msg:
-            continue
-        sender = msg.get("from", {}).get("id")
-        if sender != owner_id:
-            continue
-        text = msg.get("text", "")
-        if not text.startswith("/"):
-            continue
-        if text.strip().split()[0].lower() in ("/like", "/dislike"):
-            changed, reply = handle_vote_command(text, votes)
-            send_message(token, chat_id, reply)
-            if changed:
-                votes_changed = True
-            continue
-        command = text.strip().split()[0].lower()
-        mutated, reply = handle_command(text, cfg, votes, reading_log)
-        if reply:
-            send_message(token, chat_id, reply)
-        if mutated:
-            if command in ("/later", "/read", "/skip", "/note"):
-                reading_changed = True
-                if command == "/skip":
-                    votes_changed = True
-            else:
-                cfg_changed = True
+        c, v, r = _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhook_handled=False)
+        cfg_changed = cfg_changed or c
+        votes_changed = votes_changed or v
+        reading_changed = reading_changed or r
 
     return cfg_changed, votes_changed, reading_changed
+
+
+def _apply_update(token, chat_id, owner_id, upd, cfg, votes, reading_log, webhook_handled):
+    """Process a single Telegram update. Shared between getUpdates polling and
+    the Cloudflare Worker → repository_dispatch path.
+    Returns (cfg_changed, votes_changed, reading_changed)."""
+    cb = upd.get("callback_query")
+    if cb:
+        sender = cb.get("from", {}).get("id")
+        if sender != owner_id:
+            return False, False, False
+        vote_mutated, reading_mutated = handle_callback(
+            token, chat_id, cb, votes, reading_log, webhook_handled=webhook_handled
+        )
+        return False, vote_mutated, reading_mutated
+
+    msg = upd.get("message") or upd.get("edited_message")
+    if not msg:
+        return False, False, False
+    sender = msg.get("from", {}).get("id")
+    if sender != owner_id:
+        return False, False, False
+    text = msg.get("text", "")
+    if not text.startswith("/"):
+        return False, False, False
+    command = text.strip().split()[0].lower()
+    if command in ("/like", "/dislike"):
+        changed, reply = handle_vote_command(text, votes)
+        send_message(token, chat_id, reply)
+        return False, changed, False
+
+    mutated, reply = handle_command(text, cfg, votes, reading_log)
+    if reply:
+        send_message(token, chat_id, reply)
+    if not mutated:
+        return False, False, False
+    if command in ("/later", "/read", "/skip", "/note"):
+        return False, command == "/skip", True
+    return True, False, False
+
+
+def apply_webhook_update(token, chat_id, update, webhook_handled, cfg, votes, reading_log):
+    """Process a single update arriving via Cloudflare Worker → repository_dispatch."""
+    try:
+        owner_id = int(chat_id)
+    except (TypeError, ValueError):
+        print("CHAT_ID is not an integer; skipping webhook update.", file=sys.stderr)
+        return False, False, False
+    cfg["last_update_id"] = max(cfg.get("last_update_id", 0), update.get("update_id", 0))
+    return _apply_update(
+        token, chat_id, owner_id, update, cfg, votes, reading_log,
+        webhook_handled=webhook_handled,
+    )
 
 
 # ---------- arxiv ----------
@@ -1343,6 +1373,16 @@ def main():
         action="store_true",
         help="Send the reading digest and skip arXiv fetch.",
     )
+    parser.add_argument(
+        "--apply-update",
+        action="store_true",
+        help=(
+            "Process a single Telegram update payload from the LITFEED_UPDATE_JSON "
+            "env var (sent by the Cloudflare Worker via repository_dispatch). "
+            "Set LITFEED_WEBHOOK_HANDLED=1 if the Worker has already performed "
+            "Telegram-side actions for this update."
+        ),
+    )
     args = parser.parse_args()
 
     token = os.environ.get("TELEGRAM_TOKEN")
@@ -1355,8 +1395,39 @@ def main():
     votes = load_votes()
     reading_log = load_reading_log()
 
-    # 1. process pending /commands + callback votes
-    cfg_changed, votes_changed, reading_changed = process_telegram_updates(token, chat_id, cfg, votes, reading_log)
+    if args.apply_update:
+        raw = os.environ.get("LITFEED_UPDATE_JSON", "").strip()
+        if not raw:
+            print("LITFEED_UPDATE_JSON is empty; nothing to apply.", file=sys.stderr)
+            return
+        try:
+            update = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"LITFEED_UPDATE_JSON is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        webhook_handled = os.environ.get("LITFEED_WEBHOOK_HANDLED", "").lower() in ("1", "true", "yes")
+        cfg_changed, votes_changed, reading_changed = apply_webhook_update(
+            token, chat_id, update, webhook_handled, cfg, votes, reading_log,
+        )
+        save_config(cfg)  # last_update_id advances
+        if votes_changed:
+            save_votes(votes)
+        if reading_changed:
+            save_reading_log(reading_log)
+        print(
+            f"Applied webhook update {update.get('update_id')}: "
+            f"cfg={cfg_changed} votes={votes_changed} reading={reading_changed} "
+            f"(webhook_handled={webhook_handled})"
+        )
+        return
+
+    # 1. process pending /commands + callback votes (skipped when running behind a webhook)
+    poll_disabled = os.environ.get("LITFEED_DISABLE_POLL", "").lower() in ("1", "true", "yes")
+    if poll_disabled:
+        print("LITFEED_DISABLE_POLL set; skipping getUpdates poll (webhook is the consumer).")
+        cfg_changed = votes_changed = reading_changed = False
+    else:
+        cfg_changed, votes_changed, reading_changed = process_telegram_updates(token, chat_id, cfg, votes, reading_log)
     save_config(cfg)  # always — last_update_id advances
     if votes_changed:
         save_votes(votes)

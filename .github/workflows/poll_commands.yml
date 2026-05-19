@@ -1,10 +1,15 @@
-name: Poll Telegram Commands
+name: Poll Telegram Commands (legacy fallback)
+
+# Webhook + Cloudflare Worker is the primary path (see process_update.yml).
+# This polling workflow is kept as a manual fallback only — re-enable the cron
+# below if the webhook is offline. While a webhook is configured, getUpdates
+# returns HTTP 409 ("can't use getUpdates while webhook is active"), so this
+# workflow is a no-op until the webhook is deleted.
 
 on:
-  schedule:
-    # Every 5 minutes (GitHub cron may drift to 10-15 min under load).
-    - cron: "*/5 * * * *"
   workflow_dispatch:
+  # schedule:
+  #   - cron: "*/5 * * * *"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

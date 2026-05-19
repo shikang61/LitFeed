@@ -1,10 +1,12 @@
-name: Weekly Reading Digest
+name: Process Telegram Update
+
+# Triggered by the Cloudflare Worker via repository_dispatch when a Telegram
+# update needs server-side state mutation (commands, votes, reading-log writes).
+# The Worker handles instant Telegram-side actions itself.
 
 on:
-  schedule:
-    # Sunday evening Cambridge time during standard time; cron is UTC.
-    - cron: "0 18 * * 0"
-  workflow_dispatch:
+  repository_dispatch:
+    types: [telegram-update]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -13,13 +15,14 @@ permissions:
   contents: write
 
 concurrency:
+  # Same group as daily / digest runs so state-file writes don't race.
   group: telegram-poll
   cancel-in-progress: false
 
 jobs:
-  digest:
+  apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,15 +38,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Send weekly reading digest
+      - name: Apply webhook update
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           LITFEED_TO_READ_CHAT_ID: ${{ secrets.LITFEED_TO_READ_CHAT_ID }}
-          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
-          GROK_MODEL: ${{ vars.GROK_MODEL }}
+          LITFEED_UPDATE_JSON: ${{ toJSON(github.event.client_payload.update) }}
+          LITFEED_WEBHOOK_HANDLED: ${{ github.event.client_payload.webhook_handled }}
           LITFEED_DISABLE_POLL: "1"
-        run: python main.py --weekly-digest
+        run: python main.py --apply-update
 
       - name: Commit state changes
         run: |
@@ -51,7 +54,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add config.json votes.json reading_log.json 2>/dev/null || true
-            git commit -m "chore: update state from weekly digest" || exit 0
+            git commit -m "chore: update state from Telegram webhook" || exit 0
             git pull --rebase origin "${GITHUB_REF_NAME}" || true
             git push
           else

@@ -1,0 +1,11 @@
+name = "litfeed-bot"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# Secrets are set via `wrangler secret put NAME`, not committed here:
+#   TELEGRAM_TOKEN
+#   CHAT_ID
+#   LITFEED_TO_READ_CHAT_ID
+#   GITHUB_REPO
+#   GITHUB_PAT
+#   WEBHOOK_SECRET

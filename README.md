@@ -1,8 +1,27 @@
 # LitFeed
 
-Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions.
+Daily arXiv paper alerts delivered to Telegram. Runs autonomously via GitHub Actions, with optional sub-second button reactions through a Cloudflare Worker webhook.
 
 Checks configured arXiv categories once per day and sends a Markdown-formatted message per paper, each with 👍/👎 and reading-habit buttons. Vote on papers to train a TF-IDF preference filter that progressively narrows what you see, and use the reading log to save, read, skip, and annotate papers.
+
+## Architecture
+
+```
+Telegram ── webhook ──► Cloudflare Worker ──► repository_dispatch ──► process_update.yml
+                              │                                              │
+                              └─ instant: forward / delete / edit keyboard   └─ python main.py --apply-update (mutates state, commits)
+
+GitHub Actions cron ──► daily_papers.yml ── arXiv RSS → preference filter → Telegram
+GitHub Actions cron ──► weekly_digest.yml ── reading-log digest → Telegram
+```
+
+The Cloudflare Worker (see `worker/`) handles `Read` / `Delete` button taps in
+under a second by calling the Telegram Bot API directly. State-mutating updates
+(`/like`, `/dislike`, `/later`, `/note`, …) are forwarded to GitHub via
+`repository_dispatch`; `process_update.yml` runs `python main.py --apply-update`
+and commits the new state files. The webhook is optional — if you skip the
+Worker, re-enable the cron in `poll_commands.yml` and unset `LITFEED_DISABLE_POLL`
+on the other workflows to fall back to 5-minute `getUpdates` polling.
 
 ## Setup
 
@@ -37,6 +56,22 @@ Optionally set a repository variable named `GROK_MODEL` to override the default 
 ### 4. Enable the workflow
 
 The workflow runs daily at **08:00 UTC**. To test immediately, go to **Actions → Daily arXiv Paper Alerts → Run workflow**.
+
+### 5. (Optional) Deploy the Cloudflare Worker for instant button reactions
+
+Without the Worker, button taps are processed on the next 5-minute `getUpdates`
+poll cycle. With the Worker, `Read` / `Delete` taps respond in under a second
+and `/commands` are dispatched to GitHub Actions in real time.
+
+Setup is documented in [`worker/README.md`](worker/README.md). High-level:
+
+1. `cd worker && wrangler deploy`
+2. `wrangler secret put` for `TELEGRAM_TOKEN`, `CHAT_ID`, `LITFEED_TO_READ_CHAT_ID`, `GITHUB_REPO`, `GITHUB_PAT`, `WEBHOOK_SECRET`.
+3. `curl -X POST https://api.telegram.org/bot<TOKEN>/setWebhook -d url=<WORKER_URL> -d secret_token=<WEBHOOK_SECRET>`.
+
+Once a webhook is set, Telegram stops delivering via `getUpdates`, so the
+`poll_commands.yml` cron is intentionally disabled and the daily / weekly runs
+set `LITFEED_DISABLE_POLL=1` to skip the polling step.
 
 ## Customising via Telegram
 

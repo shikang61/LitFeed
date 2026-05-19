@@ -72,14 +72,37 @@ and quantitative finance). The live set is whatever is in `config.json`.
 ## GitHub Actions
 
 * `daily_papers.yml` — full run. Triggered by `repository_dispatch`
-  (`run-paper-alerter`, fired by cron-job.org) and `workflow_dispatch`.
-  Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars.
-* `poll_commands.yml` — every 5 minutes, `python main.py --commands-only`, so
-  commands/votes are handled promptly without waiting for the daily run.
+ (`run-paper-alerter`, fired by cron-job.org) and `workflow_dispatch`.
+ Maps `TELEGRAM_TOKEN` / `CHAT_ID` secrets to env vars. Sets
+ `LITFEED_DISABLE_POLL=1` so it skips `getUpdates` (the Cloudflare Worker
+ webhook is the consumer).
+* `process_update.yml` — triggered by `repository_dispatch` event type
+ `telegram-update`, fired by the Cloudflare Worker (`worker/index.js`) for any
+ update that needs server-side state mutation. Runs `python main.py
+ --apply-update`, reading the update payload from `LITFEED_UPDATE_JSON` and
+ the `LITFEED_WEBHOOK_HANDLED` flag from the dispatch `client_payload`.
+* `poll_commands.yml` — legacy fallback. Cron is commented out; only
+ `workflow_dispatch` remains. Re-enable the cron and remove
+ `LITFEED_DISABLE_POLL` if you delete the webhook.
+* `weekly_digest.yml` — Sunday 18:00 UTC, `python main.py --weekly-digest`.
 
-Both commit `config.json` / `votes.json` changes back with rebase. They share a
-`telegram-poll` concurrency group so two runs never push stale state. `sync.sh`
-is a local helper to rebase-and-push around those bot commits.
+All workflows commit `config.json` / `votes.json` / `reading_log.json` changes
+back with rebase. They share a `telegram-poll` concurrency group so two runs
+never push stale state. `sync.sh` is a local helper to rebase-and-push around
+those bot commits.
+
+## Cloudflare Worker (optional, for instant button reactions)
+
+`worker/index.js` is the Telegram webhook receiver. It handles
+`h:read_to_group` / `h:delete` / `h:confirm_delete` / `h:cancel_delete`
+callbacks directly via the Bot API in <1s, and forwards everything else
+(commands, votes, legacy callbacks) to GitHub via `repository_dispatch`. For
+`h:read_to_group` it does both: forward instantly, then dispatch with
+`webhook_handled=true` so `reading_log.json` is updated to `saved`.
+
+Telegram only allows one update consumer at a time. While a webhook is set,
+`getUpdates` returns HTTP 409, so `poll_commands.yml`'s cron stays disabled.
+Setup is documented in `worker/README.md`.
 
 ## Conventions
 
