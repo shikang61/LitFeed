@@ -9,8 +9,9 @@ to Telegram with vote buttons. It runs unattended on GitHub Actions.
 
 * **Language:** Python 3.11 (pinned in the workflows)
 * **Libraries:** `feedparser` (arXiv RSS), `requests` (arXiv + Telegram HTTP),
- `scikit-learn` + `numpy` (TF-IDF recommender), `pylatexenc` (LaTeX → Unicode
- in titles/abstracts)
+ `scikit-learn` + `numpy` (TF-IDF recommender),
+ `sentence-transformers` (`all-MiniLM-L6-v2` embedding branch, blended with
+ TF-IDF), `pylatexenc` (LaTeX → Unicode in titles/abstracts)
 * **Automation:** GitHub Actions (daily, weekly, on-demand webhook)
 * **State:** Cloudflare D1 (SQLite at the edge) for all runtime state;
  `shared/default_categories.json` for the seed category list; optional
@@ -35,7 +36,7 @@ commands and button callbacks are handled by the Cloudflare Worker
      anything older than `LOOKBACK_HOURS` (36) as a defensive floor.
    * Drop papers already in D1's `sent_ids` ring buffer.
   * **Filter:** if there are ≥ `MIN_VOTES_PER_SIDE` (10) likes *and* dislikes,
-    score each paper with the TF-IDF recommender (recency-weighted votes), rank
+    score each paper with the recommender (recency-weighted votes), rank
     by relevance then freshness, apply a diversity guardrail, and keep papers
     above a dynamic relevance floor. Otherwise (cold start), send freshest
     papers with the same diversity guardrail.
@@ -46,11 +47,23 @@ commands and button callbacks are handled by the Cloudflare Worker
 
 ### Recommender (`recommender.py` + selection helpers in `main.py`)
 
-`fit(liked_docs, disliked_docs)` builds a TF-IDF model (1–2 grams, English
-stop words, sublinear TF) and recency-weighted liked/disliked centroids
-(45-day half-life). `score(text, model)` returns
-`cos(text, liked_centroid) − cos(text, disliked_centroid)`. sklearn is
-imported lazily so a minimal import of `recommender` does not require sklearn.
+The score blends two branches (`DEFAULT_TFIDF_BLEND = 0.5`):
+
+* **TF-IDF:** `fit(liked_docs, disliked_docs)` builds a TF-IDF model (1–2
+  grams, English stop words, sublinear TF) and recency-weighted liked/disliked
+  centroids (45-day half-life). `score(text, model)` returns
+  `cos(text, liked_centroid) − cos(text, disliked_centroid)`.
+* **Embedding:** encode liked/disliked docs with `sentence-transformers`
+  (`all-MiniLM-L6-v2`), build recency-weighted centroids, score by the same
+  cosine difference. The encoder is memoized via `_get_encoder()`
+  (`@lru_cache`) so weights load once per process, not per fit/score call.
+
+sklearn and sentence-transformers are imported lazily, so a minimal import of
+`recommender` requires neither. Set `LITFEED_DISABLE_EMBEDDINGS=1` to skip the
+embedding branch (TF-IDF only). The model is fetched from the HuggingFace hub;
+both workflows cache `~/.cache/huggingface` and run with `HF_HUB_OFFLINE=1` /
+`TRANSFORMERS_OFFLINE=1` so daily runs never hit the hub (avoids 429s on the
+shared GitHub Actions runner IPs). Cache-miss runs pre-download once.
 
 The full algorithm (cold-start gate, relevance floor, diversity guardrail,
 serendipity slot, priority mix, weekly-digest deep-read pick, tunable

@@ -19,7 +19,9 @@ concurrency:
 jobs:
   digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 15 (not 5): a cache-miss run must download the embedding model from HF,
+    # whose anonymous rate limits can add minutes of backoff. Cached runs are fast.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,8 +37,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Cache embedding model
+        id: hf-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-v1
+
+      - name: Pre-download embedding model (cache miss only)
+        if: steps.hf-cache.outputs.cache-hit != 'true'
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
       - name: Send weekly reading digest
         env:
+          # Model is cached above; never hit the HF hub during the run (avoids 429).
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           LITFEED_TO_READ_CHAT_ID: ${{ secrets.LITFEED_TO_READ_CHAT_ID }}

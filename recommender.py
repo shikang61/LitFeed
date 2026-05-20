@@ -9,6 +9,7 @@ this module does not require them installed.
 
 from __future__ import annotations
 
+import functools
 import os
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -18,6 +19,15 @@ MIN_DOCS_PER_CATEGORY_MODEL = 2  # min liked *or* disliked rows to fit a categor
 
 def _env_disable_embeddings() -> bool:
     return os.environ.get("LITFEED_DISABLE_EMBEDDINGS", "").lower() in ("1", "true", "yes")
+
+
+@functools.lru_cache(maxsize=1)
+def _get_encoder():
+    """Load the sentence-transformer once per process. Re-instantiating it on
+    every fit/score call reloads weights and re-checks the HF hub each time."""
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
 # ---------- TF-IDF (legacy single-model API) ----------
@@ -126,11 +136,10 @@ def _fit_embedding_branch(liked_docs, disliked_docs, liked_weights, disliked_wei
     if _env_disable_embeddings() or (not liked_docs and not disliked_docs):
         return None
     try:
-        from sentence_transformers import SentenceTransformer
+        encoder = _get_encoder()
     except ImportError:
         return None
 
-    encoder = SentenceTransformer(EMBEDDING_MODEL_NAME)
     liked_vecs = encoder.encode(list(liked_docs) or [""], show_progress_bar=False)
     disliked_vecs = encoder.encode(list(disliked_docs) or [""], show_progress_bar=False)
     liked_c = _weighted_centroid(liked_vecs, liked_weights or [1.0] * len(liked_docs))
@@ -149,10 +158,9 @@ def _score_tfidf_branch(text, branch):
 def _score_embedding_branch(text, branch):
     if branch is None:
         return None
-    from sentence_transformers import SentenceTransformer
     from sklearn.metrics.pairwise import cosine_similarity
 
-    encoder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    encoder = _get_encoder()
     vec = encoder.encode([text], show_progress_bar=False)
     sim_liked = cosine_similarity(vec, branch["liked_centroid"].reshape(1, -1))[0, 0]
     sim_disliked = cosine_similarity(vec, branch["disliked_centroid"].reshape(1, -1))[0, 0]
