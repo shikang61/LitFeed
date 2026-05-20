@@ -140,8 +140,12 @@ def _fit_embedding_branch(liked_docs, disliked_docs, liked_weights, disliked_wei
     except ImportError:
         return None
 
-    liked_vecs = encoder.encode(list(liked_docs) or [""], show_progress_bar=False)
-    disliked_vecs = encoder.encode(list(disliked_docs) or [""], show_progress_bar=False)
+    if not liked_docs:
+        liked_docs, liked_weights = [""], [0.0]
+    if not disliked_docs:
+        disliked_docs, disliked_weights = [""], [0.0]
+    liked_vecs = encoder.encode(list(liked_docs), show_progress_bar=False)
+    disliked_vecs = encoder.encode(list(disliked_docs), show_progress_bar=False)
     liked_c = _weighted_centroid(liked_vecs, liked_weights or [1.0] * len(liked_docs))
     disliked_c = _weighted_centroid(disliked_vecs, disliked_weights or [1.0] * len(disliked_docs))
     if liked_c is None or disliked_c is None:

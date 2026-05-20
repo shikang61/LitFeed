@@ -46,6 +46,9 @@ jobs:
 
       - name: Pre-download embedding model (cache miss only)
         if: steps.hf-cache.outputs.cache-hit != 'true'
+        env:
+          # Authenticated download → higher HF rate limit (avoids anonymous 429).
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
       - name: Send weekly reading digest

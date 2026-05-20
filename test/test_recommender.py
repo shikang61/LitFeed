@@ -45,3 +45,27 @@ def test_fit_profile_and_score_with_category_bonus():
         profile,
     )
     assert plasma_score > finance_score
+
+
+class _FakeEncoder:
+    """Deterministic stand-in for the sentence-transformer (no torch/download)."""
+
+    def encode(self, docs, show_progress_bar=False):
+        import numpy as np
+
+        return np.array([[float(len(d)), 1.0, 2.0] for d in docs])
+
+
+def test_embedding_branch_no_nan_when_one_side_empty(monkeypatch):
+    """A per-category model with likes but no dislikes (or vice versa) must not
+    produce a NaN centroid — that crashed cosine_similarity in production."""
+    import numpy as np
+
+    monkeypatch.delenv("LITFEED_DISABLE_EMBEDDINGS", raising=False)
+    monkeypatch.setattr(recommender, "_get_encoder", _FakeEncoder)
+
+    branch = recommender._fit_embedding_branch(["graph neural networks"], [], [1.0], [])
+    assert branch is not None
+    assert not np.isnan(branch["liked_centroid"]).any()
+    assert not np.isnan(branch["disliked_centroid"]).any()
+    assert np.isfinite(recommender._score_embedding_branch("deep learning", branch))
