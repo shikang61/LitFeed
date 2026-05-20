@@ -244,13 +244,27 @@ async function handleCallback(cb, update, env, ctx) {
   const [kind, action, key] = parts;
 
   if (kind === "v" && (action === "like" || action === "dislike")) {
-    const toast = action === "like" ? "Recorded 👍" : "Recorded 👎";
-    await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: toast });
+    const bucket = action === "like" ? "liked" : "disliked";
+    // The vote is real and must persist even if the message is then deleted.
     ctx.waitUntil(
-      recordVote(env, key, action === "like" ? "liked" : "disliked").then(() =>
-        bumpCategoryPrefsFromVote(env, key, action === "like" ? "liked" : "disliked")
-      )
+      recordVote(env, key, bucket).then(() => bumpCategoryPrefsFromVote(env, key, bucket))
     );
+    if (action === "dislike") {
+      // Offer the same delete-confirm flow as the Delete button.
+      const message = cb.message || {};
+      const sourceChatId = message.chat?.id ?? Number(env.CHAT_ID);
+      const messageId = message.message_id;
+      if (messageId) {
+        await tg(env, "editMessageReplyMarkup", {
+          chat_id: sourceChatId,
+          message_id: messageId,
+          reply_markup: deleteConfirmKeyboard(key),
+        });
+      }
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Recorded 👎 — delete?" });
+    } else {
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "Recorded 👍" });
+    }
     return true;
   }
 
